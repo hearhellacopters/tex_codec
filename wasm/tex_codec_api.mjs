@@ -30,6 +30,17 @@
  *   buffers; see tex_codec_api.d.ts `TexCodecModule` for their signatures.
  */
 
+/* ---------------------------------------------------------------- version */
+
+/**
+ * Version of this JavaScript wrapper. Must match the `TEXC_VERSION_*`
+ * macros in include/tex_codec.h - {@link TexCodec#checkVersion} compares it
+ * against the loaded WASM binary so a stale `tex_codec.wasm` next to a new
+ * wrapper (or vice versa) is caught instead of silently misbehaving.
+ * @type {string}
+ */
+export const VERSION = "1.1.0";
+
 /* ------------------------------------------------------------------ enums */
 
 /**
@@ -592,12 +603,51 @@ export class TexCodec {
   }
 
   /**
-   * Library version as `{major, minor, patch}`.
-   * @returns {Promise<{major: number, minor: number, patch: number}>}
+   * Version of the loaded WASM binary.
+   * @returns {Promise<{major: number, minor: number, patch: number,
+   *                    string: string, wrapper: string}>}
+   *          `string` is the binary's version ("1.1.0"), `wrapper` is this
+   *          JS file's {@link VERSION}.
    */
   async version() {
-    const v = (await this._mod())._texc_version();
-    return { major: v >>> 16, minor: (v >>> 8) & 0xff, patch: v & 0xff };
+    const mod = await this._mod();
+    const v = mod._texc_version();
+    return {
+      major: v >>> 16,
+      minor: (v >>> 8) & 0xff,
+      patch: v & 0xff,
+      string: mod.UTF8ToString(mod._texc_version_string()),
+      wrapper: VERSION,
+    };
+  }
+
+  /**
+   * One-line build identification of the WASM binary, e.g.
+   * `"tex_codec 1.1.0 (git 3f2a1b8, built Aug 19 2026, Emscripten, wasm32,
+   * wasm)"` - paste this into bug reports.
+   * @returns {Promise<string>}
+   */
+  async buildInfo() {
+    const mod = await this._mod();
+    return mod.UTF8ToString(mod._texc_build_info());
+  }
+
+  /**
+   * Verify the loaded WASM binary matches this wrapper's {@link VERSION}.
+   * Catches a stale `tex_codec.wasm` shipped beside a newer
+   * `tex_codec_api.mjs` (or vice versa).
+   * @param {{throwOnMismatch?: boolean}} [options] throw instead of
+   *        returning false (default false)
+   * @returns {Promise<boolean>} true when the versions agree
+   */
+  async checkVersion(options = {}) {
+    const { string: binary } = await this.version();
+    const ok = binary === VERSION;
+    if (!ok && options.throwOnMismatch)
+      throw new TexCodecError(
+          "version check", TexResult.UNSUPPORTED,
+          `wrapper ${VERSION} but tex_codec.wasm reports ${binary}`);
+    return ok;
   }
 
   /**

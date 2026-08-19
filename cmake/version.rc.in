@@ -1,0 +1,42 @@
+/* version.rc.in - Windows VERSIONINFO resource, configured by CMake.
+ *
+ * Stamps the version parsed from include/tex_codec.h into the built PE
+ * files, so tex_codec.dll / texc.exe report it under
+ * Explorer -> Properties -> Details (and to any tool that reads
+ * GetFileVersionInfo). Values come from CMake; do not edit by hand. */
+
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    @TEXC_VER_MAJOR@,@TEXC_VER_MINOR@,@TEXC_VER_PATCH@,0
+ PRODUCTVERSION @TEXC_VER_MAJOR@,@TEXC_VER_MINOR@,@TEXC_VER_PATCH@,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS      VS_FF_DEBUG
+#else
+ FILEFLAGS      0x0L
+#endif
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       @TEXC_RC_FILETYPE@
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"                 /* US English, Unicode */
+        BEGIN
+            VALUE "CompanyName",      "@TEXC_RC_COMPANY@"
+            VALUE "FileDescription",  "@TEXC_RC_DESCRIPTION@"
+            VALUE "FileVersion",      "@TEXC_VERSION@.0"
+            VALUE "InternalName",     "@TEXC_RC_INTERNAL_NAME@"
+            VALUE "OriginalFilename", "@TEXC_RC_FILENAME@"
+            VALUE "ProductName",      "tex_codec"
+            VALUE "ProductVersion",   "@TEXC_VERSION@"
+            VALUE "LegalCopyright",   "@TEXC_RC_COPYRIGHT@"
+            VALUE "Comments",         "git @TEXC_GIT_HASH@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

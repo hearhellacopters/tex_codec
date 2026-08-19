@@ -5,6 +5,11 @@
  * include/tex_codec.h and wasm/exports.cpp.
  */
 
+/** Version of this JavaScript wrapper; matches the `TEXC_VERSION_*` macros
+ *  in include/tex_codec.h. Compare with the loaded binary via
+ *  `TexCodec#checkVersion`. */
+export declare const VERSION: string;
+
 /* ------------------------------------------------------------------ enums */
 
 /** Texture formats; values match `texc_format` in include/tex_codec.h. */
@@ -98,6 +103,9 @@ export interface TexCodecModule {
 
   /* ------------------------------------------------ generic C API ------ */
   _texc_version(): number;
+  _texc_version_string(): Ptr;                      /* const char* */
+  /** One-line build id: version, git hash, build date, compiler, config. */
+  _texc_build_info(): Ptr;                          /* const char* */
   _texc_format_name(format: number): Ptr;           /* const char* */
   _texc_result_str(result: number): Ptr;            /* const char* */
   _texc_block_dims(format: number, widthOut: Ptr, heightOut: Ptr,
@@ -371,7 +379,12 @@ export declare class TexCodec {
 
   static load(options?: TexCodecLoadOptions): Promise<TexCodec>;
 
-  version(): Promise<{ major: number; minor: number; patch: number }>;
+  version(): Promise<{ major: number; minor: number; patch: number;
+                       string: string; wrapper: string }>;
+  /** One-line build identification of the WASM binary, for bug reports. */
+  buildInfo(): Promise<string>;
+  /** True when the loaded binary's version matches the wrapper's VERSION. */
+  checkVersion(options?: { throwOnMismatch?: boolean }): Promise<boolean>;
   formatName(format: TexFormatValue | number): Promise<string | null>;
   blockDims(format: TexFormatValue | number):
       Promise<{ width: number; height: number; bytes: number }>;

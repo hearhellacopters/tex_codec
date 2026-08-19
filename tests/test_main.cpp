@@ -470,8 +470,53 @@ static void test_error_paths(void) {
     CHECK(texc_version() >= (1u << 16), "version");
 }
 
+/* The version lives in include/tex_codec.h and is mirrored by CMake (build
+ * + .rc resource) and by the JS wrapper. Catch drift here rather than in a
+ * shipped artifact. */
+static void test_version(void) {
+    CHECK(texc_version() == TEXC_VERSION_NUMBER,
+          "library reports %06x but header declares %06x", texc_version(),
+          TEXC_VERSION_NUMBER);
+    CHECK(strcmp(texc_version_string(), TEXC_VERSION_STRING) == 0,
+          "version string '%s' != header '%s'", texc_version_string(),
+          TEXC_VERSION_STRING);
+    CHECK(TEXC_VERSION_NUMBER ==
+              TEXC_VERSION_ENCODE(TEXC_VERSION_MAJOR, TEXC_VERSION_MINOR,
+                                  TEXC_VERSION_PATCH),
+          "TEXC_VERSION_NUMBER encoding");
+
+    const char *info = texc_build_info();
+    CHECK(info && strstr(info, TEXC_VERSION_STRING) != nullptr,
+          "build info '%s' does not carry the version", info ? info : "(null)");
+    printf("  %s\n", info);
+
+    /* The JS wrapper hard-codes the version; keep it honest. */
+    FILE *f = fopen("wasm/tex_codec_api.mjs", "rb");
+    if (!f) f = fopen("../wasm/tex_codec_api.mjs", "rb");
+    if (!f) f = fopen("../../wasm/tex_codec_api.mjs", "rb");
+    if (f) {
+        char line[512];
+        bool found = false;
+        char want[64];
+        snprintf(want, sizeof(want), "export const VERSION = \"%s\";",
+                 TEXC_VERSION_STRING);
+        while (fgets(line, sizeof(line), f))
+            if (strstr(line, "export const VERSION")) {
+                found = strstr(line, want) != nullptr;
+                if (!found)
+                    printf("    wrapper line: %s", line);
+                break;
+            }
+        fclose(f);
+        CHECK(found, "wasm/tex_codec_api.mjs VERSION != %s",
+              TEXC_VERSION_STRING);
+    } else {
+        printf("    (wrapper not found from cwd; skipped JS version check)\n");
+    }
+}
+
 int main(void) {
-    printf("tex_codec test suite (version %06x)\n\n", texc_version());
+    printf("tex_codec test suite (version %s)\n\n", texc_version_string());
 
     printf("[1/6] encode->decode roundtrips\n");
     for (const fmt_case &fc : k_cases) {
@@ -518,7 +563,8 @@ int main(void) {
     test_image_utils();
     test_reswizzle_alias();
 
-    printf("\n[5/6] error paths\n");
+    printf("\n[5/6] version + error paths\n");
+    test_version();
     test_error_paths();
     printf("  error path checks done\n");
 

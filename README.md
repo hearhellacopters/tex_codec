@@ -101,6 +101,51 @@ Ported from [tex-decoder](https://github.com/hearhellacopters/tex-decoder)'s
 - **Cropper** - `texc_crop` (tex-decoder `cropImage`): copy a rectangle out
   of a raw image with bounds validation.
 
+## Versioning
+
+The version is declared **once**, in `include/tex_codec.h`:
+
+```c
+#define TEXC_VERSION_MAJOR 1
+#define TEXC_VERSION_MINOR 1
+#define TEXC_VERSION_PATCH 0
+```
+
+Everything else derives from it, so nothing can drift: CMake parses those
+macros for the project/package version, stamps them into the Windows
+file-version resource of `tex_codec.dll` and `texc.exe` (visible under
+Properties → Details) and into `SOVERSION` on ELF builds, and the test
+suite fails if the compiled library, the header or the JS wrapper's
+`VERSION` disagree. Bumping a release means editing those three lines and
+adding a [CHANGELOG.md](CHANGELOG.md) entry.
+
+New formats, profiles and swizzle modes are only ever **appended** to their
+enums, so numeric values stay stable across minor versions - which is what
+lets the JS wrapper and other FFI bindings mirror them by number.
+
+Query it at runtime:
+
+| | |
+|---|---|
+| `texc_version()` | packed `(major << 16) \| (minor << 8) \| patch` |
+| `texc_version_string()` | `"1.1.0"` |
+| `texc_build_info()` | `tex_codec 1.1.0 (git 3f2a1b8, built Aug 19 2026, MSVC 1944, x64, Release)` |
+| `texc version` | the same build line (`texc version --short` prints just `1.1.0`) |
+| `await tex.version()` / `tex.buildInfo()` | from JavaScript, plus `tex.checkVersion()` to catch a stale `.wasm` beside a newer wrapper |
+
+Compile-time checks are available too:
+
+```c
+#if TEXC_VERSION_NUMBER < TEXC_VERSION_ENCODE(1, 1, 0)
+#  error "tex_codec 1.1.0 or newer is required"
+#endif
+```
+
+CMake consumers can require a version with
+`find_package(tex_codec 1.1 REQUIRED)`. The git hash in `texc_build_info()`
+is captured at **configure** time - re-run `cmake` to refresh it after
+committing.
+
 ## Building (native)
 
 ```bash
@@ -110,7 +155,46 @@ ctest --test-dir build -C Release
 ```
 
 Options: `-DTEXC_BUILD_SHARED=ON` (DLL/.so with exported symbols),
-`-DTEXC_BUILD_TESTS=OFF`.
+`-DTEXC_BUILD_TESTS=OFF`, `-DTEXC_BUILD_CLI=OFF`.
+
+## Command line tool (`texc`)
+
+The native build also produces `texc` (`build/Release/texc.exe`), a full
+front end for the library. `--offset` / `--size` open a window into any
+file, so you can point it straight at texture data inside a container
+(e.g. a G1T) without extracting it first:
+
+```bash
+# decode BC7 data at an offset inside a container straight to PNG
+texc decode -i file.g1t --offset 0x1234 --size 0x8000 -f BC7 -w 256 -h 256 -o out.png
+
+# Switch-swizzled ASTC: unswizzle + decode in one step ('auto' block height)
+texc decode -i tex.bin -f ASTC_8x8 -w 256 -h 256 --swizzle switch --arg auto -o out.tga
+
+# G1T alpha atlas (final half-height dimensions, alpha folded automatically)
+texc decode -i tex.bin -f ETC1_RGB_A_ATLAS -w 128 -h 128 -o out.png
+
+# encode a TGA (dimensions come from the file) and reswizzle for PS4
+texc encode -i art.tga -f BC1 --alpha-threshold 200 --swizzle ps4 -o tiled.bc1
+
+# pure layout conversions, clearly named per direction
+texc unswizzle -i tiled.bin  -f BC7 -w 256 -h 256 -m switch --arg auto -o linear.bin
+texc reswizzle -i linear.bin -f BC7 -w 256 -h 256 -m switch --arg auto -o tiled.bin
+
+# image utilities
+texc convert -i in.raw --src-profile RGBA8 --dst-profile BGRA8 -o out.raw
+texc flip -i in.raw -w 64 -h 64 --dir y -o out.raw
+texc crop -i in.raw -w 64 -h 64 --rect 16,16,32,32 -o out.raw
+
+# sizes without touching data
+texc info -f ASTC_8x8 -w 256 -h 256 -m switch --arg auto
+```
+
+Output format follows the extension: `.png` / `.tga` for decoded images,
+anything else raw bytes (`--f32` writes float RGBA). Encode input is an
+uncompressed TGA or raw RGBA8 (with `-w`/`-h`). Discovery commands:
+`texc formats`, `texc modes`, `texc profiles`, `texc version`,
+`texc help <command>`.
 
 ## Building (WebAssembly)
 

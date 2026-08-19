@@ -9,7 +9,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(process.argv[2] ?? join(here, "..", "dist"));
 const api = await import(pathToFileURL(join(dist, "tex_codec_api.mjs")).href);
 const { TexCodec, TexFormat, SwizzleMode, SwitchBlockHeightAuto,
-        PixelProfile, TexCodecError } = api;
+        PixelProfile, TexCodecError, VERSION } = api;
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -22,9 +22,18 @@ const tex = await TexCodec.load({
 });
 const mod = tex.module;
 
-/* ---- wrapper basics ---- */
+/* ---- version tracking ---- */
 const ver = await tex.version();
-check(ver.major === 1 && ver.minor === 0, `version ${ver.major}.${ver.minor}`);
+check(ver.string === VERSION,
+      `wasm binary ${ver.string} matches wrapper VERSION ${VERSION}`);
+check(ver.major >= 1 && `${ver.major}.${ver.minor}.${ver.patch}` === ver.string,
+      `version fields agree with string (${ver.string})`);
+check(await tex.checkVersion() === true, "checkVersion() passes");
+const build = await tex.buildInfo();
+check(build.includes(VERSION) && build.includes("git"),
+      `buildInfo: ${build}`);
+
+/* ---- wrapper basics ---- */
 check(await tex.formatName(TexFormat.BC7) === "BC7", "formatName(BC7)");
 const bd = await tex.blockDims(TexFormat.ASTC_8x8);
 check(bd.width === 8 && bd.height === 8 && bd.bytes === 16,

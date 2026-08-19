@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to tex_codec. Format based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
+follows [Semantic Versioning](https://semver.org/):
+
+- **MAJOR** - breaking API/ABI change.
+- **MINOR** - backward-compatible additions. New formats, profiles and
+  swizzle modes are only ever **appended** to their enums, so existing
+  numeric values stay valid across minor releases (this matters for FFI and
+  for the JavaScript wrapper, which mirrors the enums by number).
+- **PATCH** - fixes only.
+
+The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
+`_MINOR` / `_PATCH`) and everything else derives from it - see
+[Versioning](README.md#versioning).
+
+## [1.1.0] - 2026-08-19
+
+### Added
+- **G1T alpha-atlas formats** `ETC1_RGB_A_ATLAS`,
+  `PVRTC1_4BPP_RGB_A_ATLAS`, `ETC2_RGB_A_ATLAS` (KTGL `0x6F` / `0x70` /
+  `0x71`): base codec stored at double height with the alpha channel as a
+  grayscale plane underneath, folded/split automatically on decode/encode
+  and handled by the swizzlers.
+- **Encoder options** - `texc_encode_options`, `texc_encode_options_init`
+  and `texc_encode_ex`, with `alpha_threshold` wired into the BC1 and
+  ETC2_RGBA1 punchthrough encoders.
+- **Image utilities** ported from tex-decoder: `texc_convert_profile`
+  (72 pixel profiles), `texc_flip_y`, `texc_flip_x`, `texc_crop`, plus
+  `texc_profile_name` / `texc_profile_bytes_per_pixel`.
+- **`texc_reswizzle`** - explicitly named linear → platform-tiled direction
+  (alias of `texc_swizzle`, which remains for compatibility).
+- **`texc` command line tool** with `decode`, `encode`, `unswizzle`,
+  `reswizzle`, `convert`, `flip`, `crop`, `info`, `formats`, `modes`,
+  `profiles`, `version` and `help`; `--offset` / `--size` read texture data
+  from anywhere inside a container file, PNG/TGA output.
+- **WebAssembly**: per-format and per-mode named exports, `*_alloc`
+  helpers, and the ergonomic wrapper `wasm/tex_codec_api.mjs` with
+  hand-written TypeScript declarations - `TexCodec` plus `decoder`,
+  `encoder`, `swizzler` and `image` classes with generated per-format
+  helpers (`decodeBC7`, `encodeETC2_RGBA8`, `unswizzlePS4`, …).
+- **Version tracking**: `texc_version_string()`, `texc_build_info()`
+  (version, git hash, build date, compiler, config), Windows file-version
+  resources on `tex_codec.dll` / `texc.exe`, `SOVERSION` on ELF shared
+  libraries, a CMake package version file, and wrapper/binary version
+  checks (`TexCodec#checkVersion`).
+
+### Changed
+- CMake now parses the version out of `include/tex_codec.h` instead of
+  declaring its own, so the two can no longer drift.
+
+## [1.0.0] - 2026-08-18
+
+### Added
+- Initial release: decode **and** encode for BC1–BC7 (incl. BC4/BC5 SNORM
+  and BC6H UF16/SF16), ETC1, ETC2 RGB/RGBA1/RGBA8, EAC R11/RG11 (± signed),
+  PVRTC1 2bpp/4bpp RGB/RGBA, PVRTC2 2bpp/4bpp, ASTC across all 14 2D block
+  sizes (LDR + HDR decode), ATC RGB/RGBA explicit/interpolated, and RGBA8
+  passthrough.
+- Platform unswizzling for PS4, PS5, Switch, PS Vita, Xbox 360, PSP, 3DS,
+  Wii U (GX2 addrlib subset) and D3D12 64KB layouts, ported from the G1T
+  reference headers (swizzle machinery credited to Piken / DwayneR).
+- Flat C API (`include/tex_codec.h`), static/shared CMake build, Emscripten
+  target, and a roundtrip + swizzle-identity test suite.

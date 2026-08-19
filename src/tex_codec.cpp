@@ -3,6 +3,7 @@
  * validation and dispatch into the per-family codec modules.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -122,8 +123,56 @@ inline bool is_hdr_format(texc_format f) {
 extern "C" {
 
 uint32_t texc_version(void) {
-    return (TEXC_VERSION_MAJOR << 16) | (TEXC_VERSION_MINOR << 8) |
-           TEXC_VERSION_PATCH;
+    return TEXC_VERSION_NUMBER;
+}
+
+const char *texc_version_string(void) {
+    return TEXC_VERSION_STRING;
+}
+
+/* TEXC_GIT_HASH is defined by CMake at configure time; the fallback keeps
+ * hand-rolled builds (plain cl/gcc invocations) compiling unchanged. */
+#ifndef TEXC_GIT_HASH
+#  define TEXC_GIT_HASH "unknown"
+#endif
+#ifndef TEXC_BUILD_CONFIG
+#  define TEXC_BUILD_CONFIG "unspecified"
+#endif
+
+#if defined(__EMSCRIPTEN__)
+#  define TEXC_BUILD_COMPILER "Emscripten"
+#  define TEXC_BUILD_ARCH     "wasm32"
+#elif defined(_MSC_VER)
+#  define TEXC_BUILD_COMPILER "MSVC " TEXC_VERSION_STRINGIZE(_MSC_VER)
+#  if defined(_M_X64)
+#    define TEXC_BUILD_ARCH "x64"
+#  elif defined(_M_ARM64)
+#    define TEXC_BUILD_ARCH "arm64"
+#  else
+#    define TEXC_BUILD_ARCH "x86"
+#  endif
+#elif defined(__clang__)
+#  define TEXC_BUILD_COMPILER "Clang " __clang_version__
+#  define TEXC_BUILD_ARCH (sizeof(void *) == 8 ? "64-bit" : "32-bit")
+#elif defined(__GNUC__)
+#  define TEXC_BUILD_COMPILER "GCC " __VERSION__
+#  define TEXC_BUILD_ARCH (sizeof(void *) == 8 ? "64-bit" : "32-bit")
+#else
+#  define TEXC_BUILD_COMPILER "unknown compiler"
+#  define TEXC_BUILD_ARCH     "unknown arch"
+#endif
+
+const char *texc_build_info(void) {
+    /* Built once into a static buffer: __DATE__ and the arch expression are
+     * not all compile-time string literals on every toolchain. */
+    static char info[192];
+    if (!info[0]) {
+        snprintf(info, sizeof(info),
+                 "tex_codec %s (git %s, built %s, %s, %s, %s)",
+                 TEXC_VERSION_STRING, TEXC_GIT_HASH, __DATE__,
+                 TEXC_BUILD_COMPILER, TEXC_BUILD_ARCH, TEXC_BUILD_CONFIG);
+    }
+    return info;
 }
 
 const char *texc_format_name(texc_format format) {

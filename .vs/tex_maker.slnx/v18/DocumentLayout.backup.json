@@ -1,52 +1,52 @@
 {
   "Version": 1,
-  "WorkspaceRootPath": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\",
+  "WorkspaceRootPath": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\etc.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\etc.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\codecs\\etc.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\common.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\common.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\codecs\\common.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\bcn.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\bcn.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\codecs\\bcn.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\atc.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\atc.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\codecs\\atc.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\unswizzle\\gx2_addrlib.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\unswizzle\\gx2_addrlib.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\unswizzle\\gx2_addrlib.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\.gitignore||{3B902123-F8A7-4915-9F01-361F908088D0}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\.gitignore||{3B902123-F8A7-4915-9F01-361F908088D0}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:.gitignore||{3B902123-F8A7-4915-9F01-361F908088D0}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\CMakeLists.txt||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\CMakeLists.txt||{8B382828-6202-11D1-8870-0000F87579D2}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:CMakeLists.txt||{8B382828-6202-11D1-8870-0000F87579D2}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\unswizzle\\unswizzle.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\unswizzle\\unswizzle.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\unswizzle\\unswizzle.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\wasm\\build_wasm.sh||{3B902123-F8A7-4915-9F01-361F908088D0}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\wasm\\build_wasm.sh||{3B902123-F8A7-4915-9F01-361F908088D0}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:wasm\\build_wasm.sh||{3B902123-F8A7-4915-9F01-361F908088D0}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|CMake Overview Pages||{B1CAA5B0-FEB1-4350-8AB9-F895876842F2}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\codec_common.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\codec_common.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\codecs\\codec_common.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\include\\tex_codec.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\include\\tex_codec.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:include\\tex_codec.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
@@ -63,9 +63,9 @@
               "$type": "Document",
               "DocumentIndex": 0,
               "Title": "etc.cpp",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\etc.cpp",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\etc.cpp",
               "RelativeDocumentMoniker": "src\\codecs\\etc.cpp",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\etc.cpp",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\etc.cpp",
               "RelativeToolTip": "src\\codecs\\etc.cpp",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAA4AAAADAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
@@ -76,9 +76,9 @@
               "$type": "Document",
               "DocumentIndex": 2,
               "Title": "bcn.cpp",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\bcn.cpp",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\bcn.cpp",
               "RelativeDocumentMoniker": "src\\codecs\\bcn.cpp",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\bcn.cpp",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\bcn.cpp",
               "RelativeToolTip": "src\\codecs\\bcn.cpp",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
@@ -89,9 +89,9 @@
               "$type": "Document",
               "DocumentIndex": 3,
               "Title": "atc.cpp",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\atc.cpp",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\atc.cpp",
               "RelativeDocumentMoniker": "src\\codecs\\atc.cpp",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\atc.cpp",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\atc.cpp",
               "RelativeToolTip": "src\\codecs\\atc.cpp",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
@@ -102,9 +102,9 @@
               "$type": "Document",
               "DocumentIndex": 4,
               "Title": "gx2_addrlib.cpp",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\unswizzle\\gx2_addrlib.cpp",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\unswizzle\\gx2_addrlib.cpp",
               "RelativeDocumentMoniker": "src\\unswizzle\\gx2_addrlib.cpp",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\unswizzle\\gx2_addrlib.cpp",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\unswizzle\\gx2_addrlib.cpp",
               "RelativeToolTip": "src\\unswizzle\\gx2_addrlib.cpp",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
@@ -115,9 +115,9 @@
               "$type": "Document",
               "DocumentIndex": 6,
               "Title": "CMakeLists.txt",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\CMakeLists.txt",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\CMakeLists.txt",
               "RelativeDocumentMoniker": "CMakeLists.txt",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\CMakeLists.txt",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\CMakeLists.txt",
               "RelativeToolTip": "CMakeLists.txt",
               "ViewState": "AgIAACcAAAAAAAAAAAASwDwAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003109|",
@@ -128,9 +128,9 @@
               "$type": "Document",
               "DocumentIndex": 8,
               "Title": "build_wasm.sh",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\wasm\\build_wasm.sh",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\wasm\\build_wasm.sh",
               "RelativeDocumentMoniker": "wasm\\build_wasm.sh",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\wasm\\build_wasm.sh",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\wasm\\build_wasm.sh",
               "RelativeToolTip": "wasm\\build_wasm.sh",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "00000000-0000-0000-0000-000000000000.000000|",
@@ -151,9 +151,9 @@
               "$type": "Document",
               "DocumentIndex": 5,
               "Title": ".gitignore",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\.gitignore",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\.gitignore",
               "RelativeDocumentMoniker": ".gitignore",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\.gitignore",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\.gitignore",
               "RelativeToolTip": ".gitignore",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001001|",
@@ -164,9 +164,9 @@
               "$type": "Document",
               "DocumentIndex": 7,
               "Title": "unswizzle.h",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\unswizzle\\unswizzle.h",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\unswizzle\\unswizzle.h",
               "RelativeDocumentMoniker": "src\\unswizzle\\unswizzle.h",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\unswizzle\\unswizzle.h",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\unswizzle\\unswizzle.h",
               "RelativeToolTip": "src\\unswizzle\\unswizzle.h",
               "ViewState": "AgIAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
@@ -177,9 +177,9 @@
               "$type": "Document",
               "DocumentIndex": 1,
               "Title": "common.cpp",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\common.cpp",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\common.cpp",
               "RelativeDocumentMoniker": "src\\codecs\\common.cpp",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\common.cpp",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\common.cpp",
               "RelativeToolTip": "src\\codecs\\common.cpp",
               "ViewState": "AgIAAEgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
@@ -190,9 +190,9 @@
               "$type": "Document",
               "DocumentIndex": 10,
               "Title": "codec_common.h",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\codec_common.h",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\codec_common.h",
               "RelativeDocumentMoniker": "src\\codecs\\codec_common.h",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\src\\codecs\\codec_common.h",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\src\\codecs\\codec_common.h",
               "RelativeToolTip": "src\\codecs\\codec_common.h",
               "ViewState": "AgIAAFIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
@@ -203,9 +203,9 @@
               "$type": "Document",
               "DocumentIndex": 11,
               "Title": "tex_codec.h",
-              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\include\\tex_codec.h",
+              "DocumentMoniker": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\include\\tex_codec.h",
               "RelativeDocumentMoniker": "include\\tex_codec.h",
-              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_maker\\include\\tex_codec.h",
+              "ToolTip": "C:\\Users\\SalP\\Documents\\NodeProjects\\tex_codec\\include\\tex_codec.h",
               "RelativeToolTip": "include\\tex_codec.h",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",

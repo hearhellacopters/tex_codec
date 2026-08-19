@@ -38,9 +38,36 @@
 extern "C" {
 #endif
 
+/* ---------------------------------------------------------------- version
+ * THIS IS THE SINGLE SOURCE OF TRUTH for the library version. CMake parses
+ * these three macros to set the project version, the installed package
+ * version and the Windows file-version resource stamped into
+ * tex_codec.dll / texc.exe - so bumping the version means editing only
+ * these lines.
+ *
+ * Semantics: MAJOR = breaking ABI/API change, MINOR = backward-compatible
+ * additions (new formats/functions are only ever APPENDED to the enums so
+ * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 0
+#define TEXC_VERSION_MINOR 1
 #define TEXC_VERSION_PATCH 0
+
+#define TEXC_VERSION_STRINGIZE_(x) #x
+#define TEXC_VERSION_STRINGIZE(x) TEXC_VERSION_STRINGIZE_(x)
+
+/* "1.1.0" - the version this HEADER declares, resolved at compile time. */
+#define TEXC_VERSION_STRING                      \
+    TEXC_VERSION_STRINGIZE(TEXC_VERSION_MAJOR) "." \
+    TEXC_VERSION_STRINGIZE(TEXC_VERSION_MINOR) "." \
+    TEXC_VERSION_STRINGIZE(TEXC_VERSION_PATCH)
+
+/* Packed as (major << 16) | (minor << 8) | patch, for numeric comparisons:
+ *   #if TEXC_VERSION_NUMBER >= TEXC_VERSION_ENCODE(1, 1, 0) */
+#define TEXC_VERSION_ENCODE(maj, min, pat) \
+    (((maj) << 16) | ((min) << 8) | (pat))
+#define TEXC_VERSION_NUMBER                                  \
+    TEXC_VERSION_ENCODE(TEXC_VERSION_MAJOR, TEXC_VERSION_MINOR, \
+                        TEXC_VERSION_PATCH)
 
 /* ---------------------------------------------------------------- formats */
 
@@ -135,8 +162,19 @@ typedef enum texc_result {
 
 /* ------------------------------------------------------------------ query */
 
-/* Library version as (major << 16) | (minor << 8) | patch. */
+/* Version of the LIBRARY BINARY as (major << 16) | (minor << 8) | patch.
+ * Compare against TEXC_VERSION_NUMBER (the header you compiled against) to
+ * detect a header/binary mismatch when linking dynamically. */
 TEXC_API uint32_t texc_version(void);
+
+/* Version of the library binary as "1.1.0". Never NULL. */
+TEXC_API const char *texc_version_string(void);
+
+/* One-line build identification for logs and bug reports, e.g.
+ * "tex_codec 1.1.0 (git 3f2a1b8, built Aug 19 2026, MSVC 19.44, x64)".
+ * The git hash is stamped in at CMake configure time when the source is a
+ * git checkout ("unknown" otherwise). Never NULL. */
+TEXC_API const char *texc_build_info(void);
 
 /* Human-readable name of a format ("BC7", "ASTC_6x6", ...); NULL if invalid */
 TEXC_API const char *texc_format_name(texc_format format);
