@@ -29,6 +29,9 @@ export declare const TexFormat: Readonly<{
   /** G1T alpha-atlas formats: base codec at double height, alpha folded
    *  from the grayscale bottom half. Pass FINAL (half-height) dimensions. */
   ETC1_RGB_A_ATLAS: 43; PVRTC1_4BPP_RGB_A_ATLAS: 44; ETC2_RGB_A_ATLAS: 45;
+  /** PICA200 (3DS) ETC1: 8x8 tiles of four byte-reversed 4x4 ETC1
+   *  blocks; RGB8A4 prefixes each with 8 bytes of 4-bit alpha. */
+  PICA_ETC1_RGB8: 46; PICA_ETC1_RGB8A4: 47;
 }>;
 export type TexFormatValue = (typeof TexFormat)[keyof typeof TexFormat];
 

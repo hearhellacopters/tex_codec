@@ -233,6 +233,28 @@ try {
         "crop KAT");
 }
 
+/* ---- PICA200 (3DS) ETC1 ---- */
+{
+  const w = 64, h = 64;
+  const img = gradient(w, h);
+  for (const name of ["PICA_ETC1_RGB8", "PICA_ETC1_RGB8A4"]) {
+    const fmt = TexFormat[name];
+    const bpp = name.endsWith("A4") ? 1 : 0.5;
+    const enc = await tex.encoder.encode(fmt, img, w, h);
+    check(enc.length === w * h * bpp, `${name} size ${enc.length} (${bpp}B/px)`);
+    const dec = await tex.decoder.decode(fmt, enc, w, h);
+    const p = psnr(img, dec);
+    check(p > 26, `${name} roundtrip PSNR ${p.toFixed(1)} dB > 26`);
+  }
+  const bd = await tex.blockDims(TexFormat.PICA_ETC1_RGB8);
+  check(bd.width === 8 && bd.height === 8 && bd.bytes === 32,
+        "PICA_ETC1_RGB8 block dims are the 8x8 tile");
+  check(typeof tex.decoder.decodePICA_ETC1_RGB8 === "function" &&
+        typeof tex.encoder.encodePICA_ETC1_RGB8A4 === "function" &&
+        typeof mod._texc_decode_pica_etc1_rgb8 === "function",
+        "PICA helpers + named exports present");
+}
+
 /* ---- reswizzle raw exports ---- */
 check(typeof mod._texc_reswizzle === "function" &&
       typeof mod._texc_reswizzle_ps4 === "function" &&

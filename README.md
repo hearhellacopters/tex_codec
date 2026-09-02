@@ -17,6 +17,7 @@ Includes Web Assembly for `.wasm`, `.js` and `.ts` output.
 | PVRTC | PVRTC1 (with alpha†) 2bpp & 4bpp RGB/RGBA, PVRTC2 2bpp & 4bpp | ✅ | ✅ (PVRTC2: hard-mode) |
 | ASTC | LDR + HDR blocks, 2D block sizes 4x4 ... 12x12 | ✅ | ✅ (valid-bitstream baseline) |
 | ATC | ATC RGB, RGBA explicit, RGBA interpolated | ✅ | ✅ |
+| PICA200 (3DS) | `PICA_ETC1_RGB8` (GPU_ETC1), `PICA_ETC1_RGB8A4` (GPU_ETC1A4) | ✅ | ✅ |
 | Raw | RGBA8 passthrough | ✅ | ✅ |
 
 Decode target is 8-bit RGBA (`texc_decode`) or float RGBA (`texc_decode_f32`,
@@ -41,6 +42,31 @@ you always pass the **final** (half-height) dimensions:
 - `texc_swizzle` / `texc_unswizzle` / `texc_swizzled_size` operate on the
   double-height layout automatically (doubles `HEIGHT` before
   untiling).
+
+### PICA200 (Nintendo 3DS) ETC1
+
+`PICA_ETC1_RGB8` and `PICA_ETC1_RGB8A4` are ordinary ETC1 colour data in
+the 3DS's own container, handled transparently:
+
+- the image is stored as **8x8 pixel tiles** in row-major order, each tile
+  holding four 4x4 ETC1 blocks in the order (0,0), (4,0), (0,4), (4,4);
+- each 64-bit ETC1 block is **byte-reversed** relative to the standard
+  big-endian layout;
+- `RGB8A4` additionally prefixes every colour block with **8 bytes of
+  4-bit alpha**, nibble index `x*4 + y` (ETC1's own pixel order), expanded
+  as `(a << 4) | a`.
+
+Block geometry is reported as the 8x8 tile (32 bytes = 4bpp for RGB8,
+64 bytes = 8bpp for RGB8A4), so `texc_encoded_size` rounds up to whole
+tiles exactly as the hardware stores them. The layout was verified against
+devkitPro's tex3ds (which encodes via rg-etc1) and gdkchan/SPICA; note that
+SPICA also flips its output vertically as its own convention - that is not
+part of the format, so this library keeps its usual top-left origin (use
+`texc_flip_y` for the other orientation).
+
+```bash
+texc decode -i tex.bin -f PICA_ETC1_RGB8A4 -w 128 -h 128 -o out.png
+```
 
 ### Encoder options
 
@@ -107,7 +133,7 @@ The version is declared **once**, in `include/tex_codec.h`:
 
 ```c
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 1
+#define TEXC_VERSION_MINOR 2
 #define TEXC_VERSION_PATCH 0
 ```
 
@@ -128,9 +154,9 @@ Query it at runtime:
 | | |
 |---|---|
 | `texc_version()` | packed `(major << 16) \| (minor << 8) \| patch` |
-| `texc_version_string()` | `"1.1.0"` |
-| `texc_build_info()` | `tex_codec 1.1.0 (git 3f2a1b8, built Aug 19 2026, MSVC 1944, x64, Release)` |
-| `texc version` | the same build line (`texc version --short` prints just `1.1.0`) |
+| `texc_version_string()` | `"1.2.0"` |
+| `texc_build_info()` | `tex_codec 1.2.0 (git 3f2a1b8, built Aug 19 2026, MSVC 1944, x64, Release)` |
+| `texc version` | the same build line (`texc version --short` prints just `1.2.0`) |
 | `await tex.version()` / `tex.buildInfo()` | from JavaScript, plus `tex.checkVersion()` to catch a stale `.wasm` beside a newer wrapper |
 
 Compile-time checks are available too:
@@ -294,6 +320,7 @@ the enums - one per format and one per swizzle mode (fully typed in the
 ```js
 await tex.decoder.decodeBC7(data, w, h);
 await tex.decoder.decodeETC1_RGB_A_ATLAS(g1tData, w, h);
+await tex.decoder.decodePICA_ETC1_RGB8A4(tex3dsData, w, h);   // 3DS
 await tex.decoder.decodeSwizzledSwitch(TexFormat.ASTC_8x8, tiled, w, h,
                                        SwitchBlockHeightAuto);
 await tex.encoder.encodeETC2_RGBA8(rgba, w, h);

@@ -49,13 +49,13 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 1
+#define TEXC_VERSION_MINOR 2
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
 #define TEXC_VERSION_STRINGIZE(x) TEXC_VERSION_STRINGIZE_(x)
 
-/* "1.1.0" - the version this HEADER declares, resolved at compile time. */
+/* e.g. "1.2.0" - the version this HEADER declares, at compile time. */
 #define TEXC_VERSION_STRING                      \
     TEXC_VERSION_STRINGIZE(TEXC_VERSION_MAJOR) "." \
     TEXC_VERSION_STRINGIZE(TEXC_VERSION_MINOR) "." \
@@ -144,6 +144,25 @@ typedef enum texc_format {
     TEXC_FORMAT_ETC1_RGB_A_ATLAS,        /* KTGL ETC1RGBETC1A   (0x6F)      */
     TEXC_FORMAT_PVRTC1_4BPP_RGB_A_ATLAS, /* KTGL PVRT4RGBPVRT4A (0x70)      */
     TEXC_FORMAT_ETC2_RGB_A_ATLAS,        /* KTGL ETC2RGBA8      (0x71)      */
+
+    /* PICA200 (Nintendo 3DS) ETC1. Same ETC1 codec, different container:
+     * the image is stored as 8x8 pixel TILES in row-major order, each tile
+     * holding four 4x4 ETC1 blocks in the order (0,0), (4,0), (0,4), (4,4),
+     * and every 64-bit ETC1 block is byte-reversed relative to the standard
+     * big-endian layout. RGB8A4 additionally puts 8 bytes of 4-bit alpha in
+     * FRONT of each colour block (nibble index x*4 + y, ETC1's own pixel
+     * order, expanded as (a << 4) | a).
+     *
+     * Block geometry is therefore reported as 8x8 with 32 bytes (RGB8,
+     * 4bpp) or 64 bytes (RGB8A4, 8bpp) per tile, so sizes round up to whole
+     * tiles exactly as the hardware stores them.
+     *
+     * Layout verified against devkitPro tex3ds (which encodes via rg-etc1)
+     * and gdkchan/SPICA. Note SPICA also flips its output vertically as its
+     * own convention; that is not part of the format, so this library does
+     * not (use texc_flip_y if you want that orientation). */
+    TEXC_FORMAT_PICA_ETC1_RGB8,   /* 3DS GPU_ETC1,   4bpp, 32B/8x8 tile    */
+    TEXC_FORMAT_PICA_ETC1_RGB8A4, /* 3DS GPU_ETC1A4, 8bpp, 64B/8x8 tile    */
 
     TEXC_FORMAT_COUNT
 } texc_format;

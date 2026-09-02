@@ -673,12 +673,118 @@ size_t etc_block_bytes(texc_format fmt) {
     }
 }
 
+/* ------------------------------------------------- PICA200 (3DS) ETC1 ---
+ * The 3DS stores ETC1 as 8x8 pixel TILES in row-major order. Each tile
+ * holds four 4x4 ETC1 blocks in the order (0,0), (4,0), (0,4), (4,4), and
+ * every 64-bit ETC1 block is byte-reversed relative to the standard
+ * big-endian layout. RGB8A4 puts 8 bytes of 4-bit alpha in FRONT of each
+ * colour block; alpha nibble index is x*4 + y (ETC1's own pixel order),
+ * expanded to 8 bits as (a << 4) | a.
+ *
+ * Verified against devkitPro tex3ds (which encodes via rg-etc1) and
+ * gdkchan/SPICA. SPICA additionally flips vertically as its own output
+ * convention; that is not part of the format, so we keep the library's
+ * top-left origin.
+ *
+ * The colour payload is plain ETC1, so this reuses the ETC1 encoder and
+ * decoder above unchanged - only the container differs. */
+
+const uint32_t k_pica_sub_x[4] = { 0, 4, 0, 4 };
+const uint32_t k_pica_sub_y[4] = { 0, 0, 4, 4 };
+
+void pica_reverse8(const uint8_t *in, uint8_t out[8]) {
+    for (int i = 0; i < 8; i++) out[i] = in[7 - i];
+}
+
+/* Bytes per 8x8 tile: four blocks of 8 (RGB8) or 16 (RGB8A4). */
+size_t pica_tile_bytes(texc_format fmt) {
+    return fmt == TEXC_FORMAT_PICA_ETC1_RGB8A4 ? 64u : 32u;
+}
+
+int pica_decode(texc_format fmt, const uint8_t *src, size_t src_size,
+                uint32_t width, uint32_t height, uint8_t *dst) {
+    const bool has_alpha = (fmt == TEXC_FORMAT_PICA_ETC1_RGB8A4);
+    const size_t sub_bytes = has_alpha ? 16u : 8u;
+    const uint32_t tw = (width + 7) / 8, th = (height + 7) / 8;
+    if (src_size < (size_t)tw * th * pica_tile_bytes(fmt))
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+
+    uint8_t tile[8 * 8 * 4], blk[64], be[8];
+    for (uint32_t ty = 0; ty < th; ty++) {
+        for (uint32_t tx = 0; tx < tw; tx++) {
+            const uint8_t *tp =
+                src + ((size_t)ty * tw + tx) * pica_tile_bytes(fmt);
+            for (int s = 0; s < 4; s++) {
+                const uint8_t *sp = tp + (size_t)s * sub_bytes;
+                pica_reverse8(has_alpha ? sp + 8 : sp, be);
+                decode_color_block(be, false, blk);
+                if (has_alpha) {
+                    for (uint32_t x = 0; x < 4; x++)
+                        for (uint32_t y = 0; y < 4; y++) {
+                            uint32_t n = x * 4 + y;      /* nibble index */
+                            uint8_t v = (uint8_t)((sp[n >> 1] >>
+                                                   ((n & 1) * 4)) & 0xF);
+                            blk[(y * 4 + x) * 4 + 3] = expand4(v);
+                        }
+                }
+                uint32_t ox = k_pica_sub_x[s], oy = k_pica_sub_y[s];
+                for (uint32_t y = 0; y < 4; y++)
+                    memcpy(tile + (((size_t)(oy + y) * 8) + ox) * 4,
+                           blk + (size_t)y * 16, 16);
+            }
+            write_block_rgba8(dst, width, height, tx, ty, 8, 8, tile);
+        }
+    }
+    return TEXC_OK;
+}
+
+int pica_encode(texc_format fmt, const uint8_t *src,
+                uint32_t width, uint32_t height, uint8_t *dst) {
+    const bool has_alpha = (fmt == TEXC_FORMAT_PICA_ETC1_RGB8A4);
+    const size_t sub_bytes = has_alpha ? 16u : 8u;
+    const uint32_t tw = (width + 7) / 8, th = (height + 7) / 8;
+
+    uint8_t tile[8 * 8 * 4], blk[64], be[8];
+    for (uint32_t ty = 0; ty < th; ty++) {
+        for (uint32_t tx = 0; tx < tw; tx++) {
+            read_block_rgba8(src, width, height, tx, ty, 8, 8, tile);
+            uint8_t *tp = dst + ((size_t)ty * tw + tx) * pica_tile_bytes(fmt);
+            for (int s = 0; s < 4; s++) {
+                uint32_t ox = k_pica_sub_x[s], oy = k_pica_sub_y[s];
+                for (uint32_t y = 0; y < 4; y++)
+                    memcpy(blk + (size_t)y * 16,
+                           tile + (((size_t)(oy + y) * 8) + ox) * 4, 16);
+
+                uint8_t *sp = tp + (size_t)s * sub_bytes;
+                if (has_alpha) {
+                    memset(sp, 0, 8);
+                    for (uint32_t x = 0; x < 4; x++)
+                        for (uint32_t y = 0; y < 4; y++) {
+                            uint32_t n = x * 4 + y;
+                            uint8_t a = blk[(y * 4 + x) * 4 + 3];
+                            uint8_t v = (uint8_t)((a + 8) / 17);  /* 8->4 bit */
+                            if (v > 15) v = 15;
+                            sp[n >> 1] |= (uint8_t)(v << ((n & 1) * 4));
+                        }
+                }
+                /* ETC1 only: no ETC2 planar/T/H modes on PICA200. */
+                encode_color_block(blk, true, false, be);
+                pica_reverse8(be, has_alpha ? sp + 8 : sp);
+            }
+        }
+    }
+    return TEXC_OK;
+}
+
 } /* anonymous namespace */
 
 /* ------------------------------------------------------------ dispatch --- */
 
 int etc_decode(texc_format fmt, const uint8_t *src, size_t src_size,
                uint32_t width, uint32_t height, uint8_t *dst) {
+    if (fmt == TEXC_FORMAT_PICA_ETC1_RGB8 ||
+        fmt == TEXC_FORMAT_PICA_ETC1_RGB8A4)
+        return pica_decode(fmt, src, src_size, width, height, dst);
     (void)src_size;
     uint32_t bw = (width + 3) / 4, bh = (height + 3) / 4;
     size_t bs = etc_block_bytes(fmt);
@@ -739,6 +845,9 @@ int etc_decode(texc_format fmt, const uint8_t *src, size_t src_size,
 int etc_encode(texc_format fmt, const uint8_t *src,
                uint32_t width, uint32_t height, uint8_t *dst,
                const texc_encode_options *opts) {
+    if (fmt == TEXC_FORMAT_PICA_ETC1_RGB8 ||
+        fmt == TEXC_FORMAT_PICA_ETC1_RGB8A4)
+        return pica_encode(fmt, src, width, height, dst);
     uint32_t bw = (width + 3) / 4, bh = (height + 3) / 4;
     size_t bs = etc_block_bytes(fmt);
     uint8_t px[64];

@@ -72,6 +72,10 @@ const format_info k_formats[TEXC_FORMAT_COUNT] = {
     /* ETC1_RGB_A_ATLAS     */ { "ETC1_RGB_A_ATLAS",        4, 4, 16 },
     /* PVRTC1_4BPP_RGB_A_ATLAS*/{ "PVRTC1_4BPP_RGB_A_ATLAS",4, 4, 16 },
     /* ETC2_RGB_A_ATLAS     */ { "ETC2_RGB_A_ATLAS",        4, 4, 16 },
+    /* PICA200 (3DS) ETC1: the atomic unit is the 8x8 tile of four 4x4
+     * ETC1 blocks, so sizes round up to whole tiles like the hardware. */
+    /* PICA_ETC1_RGB8       */ { "PICA_ETC1_RGB8",          8, 8, 32 },
+    /* PICA_ETC1_RGB8A4     */ { "PICA_ETC1_RGB8A4",        8, 8, 64 },
 };
 
 inline bool valid_format(texc_format f) {
@@ -84,6 +88,9 @@ family format_family(texc_format f) {
     if (f == TEXC_FORMAT_RGBA8) return family::raw;
     if (f >= TEXC_FORMAT_BC1 && f <= TEXC_FORMAT_BC7) return family::bcn;
     if (f >= TEXC_FORMAT_ETC1_RGB && f <= TEXC_FORMAT_EAC_RG11_SIGNED) return family::etc;
+    /* PICA200 ETC1 reuses the ETC codec with a 3DS-specific container. */
+    if (f == TEXC_FORMAT_PICA_ETC1_RGB8 || f == TEXC_FORMAT_PICA_ETC1_RGB8A4)
+        return family::etc;
     if (f >= TEXC_FORMAT_PVRTC1_2BPP_RGB && f <= TEXC_FORMAT_PVRTC2_4BPP) return family::pvrtc;
     if (f >= TEXC_FORMAT_ASTC_4x4 && f <= TEXC_FORMAT_ASTC_12x12) return family::astc;
     if (f >= TEXC_FORMAT_ETC1_RGB_A_ATLAS && f <= TEXC_FORMAT_ETC2_RGB_A_ATLAS)

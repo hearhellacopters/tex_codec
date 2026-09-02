@@ -15,6 +15,19 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.2.0] - 2026-08-19
+
+### Added
+- **PICA200 (Nintendo 3DS) ETC1 formats** `PICA_ETC1_RGB8` (GPU_ETC1,
+  4bpp) and `PICA_ETC1_RGB8A4` (GPU_ETC1A4, 8bpp): standard ETC1 colour
+  data in the 3DS container - 8x8 pixel tiles holding four 4x4 blocks in
+  (0,0),(4,0),(0,4),(4,4) order, each ETC1 block byte-reversed, and for
+  RGB8A4 an 8-byte 4-bit alpha plane in front of every colour block
+  (nibble index x*4 + y). Block geometry is reported as the 8x8 tile so
+  sizes round up to whole tiles like the hardware. Decode, encode, CLI and
+  the WebAssembly wrapper all support them; layout verified against
+  devkitPro tex3ds (which encodes via rg-etc1) and gdkchan/SPICA.
+
 ## [1.1.0] - 2026-08-19
 
 ### Added

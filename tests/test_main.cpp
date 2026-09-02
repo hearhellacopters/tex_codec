@@ -131,6 +131,8 @@ static const fmt_case k_cases[] = {
     { TEXC_FORMAT_ETC1_RGB_A_ATLAS,      4, true,  26.0, false },
     { TEXC_FORMAT_PVRTC1_4BPP_RGB_A_ATLAS,4,true,  22.0, true  },
     { TEXC_FORMAT_ETC2_RGB_A_ATLAS,      4, true,  26.0, false },
+    { TEXC_FORMAT_PICA_ETC1_RGB8,        3, false, 26.0, false },
+    { TEXC_FORMAT_PICA_ETC1_RGB8A4,      4, true,  26.0, false },
 };
 
 static void test_roundtrip(const fmt_case &fc, uint32_t w, uint32_t h) {
@@ -457,6 +459,109 @@ static void test_reswizzle_alias(void) {
     printf("  reswizzle alias checks done\n");
 }
 
+/* PICA200 (3DS) ETC1 container: 8x8 tiles, four 4x4 blocks per tile in
+ * (0,0),(4,0),(0,4),(4,4) order, ETC1 block bytes reversed, and for
+ * RGB8A4 an 8-byte 4-bit alpha plane in front of each colour block with
+ * nibble index x*4 + y. Verified against a standard-ETC1 reference decode
+ * so a regression in any one of those rules is caught. */
+static void test_pica_etc1(void) {
+    /* Sizes: 4bpp / 8bpp, rounded up to whole 8x8 tiles. */
+    CHECK(texc_encoded_size(TEXC_FORMAT_PICA_ETC1_RGB8, 64, 64) == 64 * 64 / 2,
+          "PICA RGB8 size != 4bpp");
+    CHECK(texc_encoded_size(TEXC_FORMAT_PICA_ETC1_RGB8A4, 64, 64) == 64 * 64,
+          "PICA RGB8A4 size != 8bpp");
+    CHECK(texc_encoded_size(TEXC_FORMAT_PICA_ETC1_RGB8, 1, 1) == 32,
+          "PICA size should round up to one 8x8 tile");
+
+    /* A standard ETC1 block (individual mode, flat colour). Decoded as
+     * plain ETC1 it gives the reference 4x4; the PICA form is the same
+     * eight bytes REVERSED. */
+    const uint8_t etc1_be[8] = { 0xF0, 0x50, 0xA0, 0x00, 0, 0, 0, 0 };
+    uint8_t ref[4 * 4 * 4];
+    CHECK(texc_decode(TEXC_FORMAT_ETC1_RGB, etc1_be, 8, 4, 4, ref,
+                      sizeof(ref)) == TEXC_OK, "reference ETC1 decode");
+
+    uint8_t tile[32];
+    for (int s = 0; s < 4; s++)
+        for (int i = 0; i < 8; i++)
+            tile[s * 8 + i] = etc1_be[7 - i];        /* reversed per block */
+    uint8_t out[8 * 8 * 4];
+    CHECK(texc_decode(TEXC_FORMAT_PICA_ETC1_RGB8, tile, sizeof(tile), 8, 8,
+                      out, sizeof(out)) == TEXC_OK, "PICA decode rc");
+    bool same = true;
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            for (int c = 0; c < 3; c++)
+                if (out[(y * 8 + x) * 4 + c] !=
+                    ref[((y % 4) * 4 + (x % 4)) * 4 + c])
+                    same = false;
+    CHECK(same, "PICA byte-reversed ETC1 block != reference ETC1 decode "
+                "(got %d,%d,%d want %d,%d,%d)", out[0], out[1], out[2],
+          ref[0], ref[1], ref[2]);
+
+    /* Sub-block placement: four distinct colours must land in the right
+     * quadrants, i.e. order (0,0), (4,0), (0,4), (4,4). */
+    const uint8_t colours[4][3] = {
+        { 0xFF, 0x00, 0x00 }, { 0x00, 0xFF, 0x00 },
+        { 0x00, 0x00, 0xFF }, { 0xFF, 0xFF, 0x00 } };
+    uint8_t t2[32];
+    for (int s = 0; s < 4; s++) {
+        uint8_t be[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+        be[0] = (uint8_t)((colours[s][0] >> 4) * 0x11);
+        be[1] = (uint8_t)((colours[s][1] >> 4) * 0x11);
+        be[2] = (uint8_t)((colours[s][2] >> 4) * 0x11);
+        for (int i = 0; i < 8; i++) t2[s * 8 + i] = be[7 - i];
+    }
+    CHECK(texc_decode(TEXC_FORMAT_PICA_ETC1_RGB8, t2, sizeof(t2), 8, 8, out,
+                      sizeof(out)) == TEXC_OK, "PICA quadrant decode rc");
+    const uint32_t qx[4] = { 0, 4, 0, 4 }, qy[4] = { 0, 0, 4, 4 };
+    for (int s = 0; s < 4; s++) {
+        /* Expected value comes from decoding the SAME bytes as standard
+         * ETC1 (index 0 picks a non-zero modifier, so the base colour is
+         * not reproduced verbatim) - this isolates the container from the
+         * codec, which is what we are testing here. */
+        uint8_t be[8], want[4 * 4 * 4];
+        for (int i = 0; i < 8; i++) be[i] = t2[s * 8 + 7 - i];
+        CHECK(texc_decode(TEXC_FORMAT_ETC1_RGB, be, 8, 4, 4, want,
+                          sizeof(want)) == TEXC_OK, "quadrant ref decode");
+        const uint8_t *px = &out[((size_t)qy[s] * 8 + qx[s]) * 4];
+        CHECK(px[0] == want[0] && px[1] == want[1] && px[2] == want[2],
+              "PICA sub-block %d at (%u,%u) = (%d,%d,%d), want (%d,%d,%d)",
+              s, qx[s], qy[s], px[0], px[1], px[2],
+              want[0], want[1], want[2]);
+        /* and the four quadrants must differ from each other */
+        if (s > 0) {
+            const uint8_t *prev = &out[((size_t)qy[s - 1] * 8 + qx[s - 1]) * 4];
+            CHECK(px[0] != prev[0] || px[1] != prev[1] || px[2] != prev[2],
+                  "PICA sub-blocks %d and %d decoded identically", s - 1, s);
+        }
+    }
+
+    /* RGB8A4: alpha plane precedes the colour block, nibble index x*4 + y. */
+    uint8_t ta[64];
+    memset(ta, 0, sizeof(ta));
+    for (int s = 0; s < 4; s++) {
+        uint8_t *sp = ta + s * 16;
+        for (uint32_t x = 0; x < 4; x++)
+            for (uint32_t y = 0; y < 4; y++) {
+                uint32_t n = x * 4 + y;
+                sp[n >> 1] |= (uint8_t)((n & 0xF) << ((n & 1) * 4));
+            }
+        for (int i = 0; i < 8; i++) sp[8 + i] = etc1_be[7 - i];
+    }
+    CHECK(texc_decode(TEXC_FORMAT_PICA_ETC1_RGB8A4, ta, sizeof(ta), 8, 8, out,
+                      sizeof(out)) == TEXC_OK, "PICA A4 decode rc");
+    bool alpha_ok = true;
+    for (uint32_t x = 0; x < 4; x++)
+        for (uint32_t y = 0; y < 4; y++) {
+            uint8_t want = (uint8_t)(((x * 4 + y) & 0xF) * 0x11);
+            if (out[((size_t)y * 8 + x) * 4 + 3] != want) alpha_ok = false;
+        }
+    CHECK(alpha_ok, "PICA RGB8A4 alpha nibble order/expansion wrong");
+
+    printf("  PICA200 ETC1 container checks done\n");
+}
+
 static void test_error_paths(void) {
     uint8_t buf[64] = {0};
     CHECK(texc_decode(TEXC_FORMAT_BC1, nullptr, 0, 4, 4, buf, 64) ==
@@ -562,6 +667,8 @@ int main(void) {
     printf("\n[4/6] image utilities + reswizzle\n");
     test_image_utils();
     test_reswizzle_alias();
+
+    test_pica_etc1();
 
     printf("\n[5/6] version + error paths\n");
     test_version();

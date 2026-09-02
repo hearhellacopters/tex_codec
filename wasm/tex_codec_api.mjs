@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -68,6 +68,10 @@ export const TexFormat = Object.freeze({
    *  ETC2RGBA8): base codec at double height, alpha folded from the
    *  grayscale bottom half. Pass the FINAL image dimensions. */
   ETC1_RGB_A_ATLAS: 43, PVRTC1_4BPP_RGB_A_ATLAS: 44, ETC2_RGB_A_ATLAS: 45,
+  /** PICA200 (3DS) ETC1: 8x8 tiles of four 4x4 ETC1 blocks, blocks
+   *  byte-reversed; RGB8A4 prefixes each block with 8 bytes of 4-bit
+   *  alpha. Sizes round up to whole tiles. */
+  PICA_ETC1_RGB8: 46, PICA_ETC1_RGB8A4: 47,
 });
 
 /**
