@@ -2,3 +2,7 @@ ref/
 build/
 build-*/
 dist/
+tex_codec*.zip
+
+# Visual Studio / IDE state
+.vs/
