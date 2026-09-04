@@ -163,6 +163,30 @@ else()
         install(TARGETS texc_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 
+    # ----------------------------------------------------------- release
+    # Packages the release zip (wasm + cli + header + docs) via
+    # tools/make_release.py. A dedicated target rather than a POST_BUILD
+    # step, because the zip also needs the Emscripten output, which the
+    # native build does not produce:
+    #
+    #   cmake --build build --config Release --target release
+    #
+    # Add --publish (see the script) to also create the GitHub release from
+    # the matching CHANGELOG.md section.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        add_custom_target(release
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_release.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            COMMENT "Packaging tex_codec release zip"
+            USES_TERMINAL)
+        add_dependencies(release tex_codec)
+        if(TARGET texc_cli)
+            add_dependencies(release texc_cli)
+        endif()
+    endif()
+
     # ------------------------------------------------------------- tests
     if(TEXC_BUILD_TESTS)
         enable_testing()

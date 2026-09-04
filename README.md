@@ -99,7 +99,7 @@ the test suite. Supported layouts:
 |---|---|
 | `TEXC_SWIZZLE_PS4` / `TEXC_SWIZZLE_PS5` | Orbis/Prospero 8x8 micro-tile Morton |
 | `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto) |
-| `TEXC_SWIZZLE_PSVITA` | GXM Morton / Z-order |
+| `TEXC_SWIZZLE_PSVITA` | GXM: 32x32 pixel tiles for raw formats (`arg` = bytes per pixel, 0 = the format's own; G1T ships 8/16/24/32bpp raw Vita textures), Morton / Z-order for block formats |
 | `TEXC_SWIZZLE_X360` | Xenos macro tiling |
 | `TEXC_SWIZZLE_PSP` | 16-byte x 8-row tiles |
 | `TEXC_SWIZZLE_3DS` | 8x8 Z-order tiles |
@@ -109,6 +109,14 @@ the test suite. Supported layouts:
 `texc_decode_swizzled` does unswizzle + decode in one call. Container
 parsing is intentionally left to the adopting project - this library 
 is the conversion core.
+
+**PS Vita raw** reproduces `DeswizzlePSVitaRaw` exactly: the tiled buffer
+is `width * height * bytesPerPixel` (the raw width is used, *not* rounded up
+to whole 32x32 tiles), and texels whose mapped offset falls outside the
+image are dropped, as the reference does. That only happens when a
+dimension is not a multiple of 32, where the mapping is consequently not
+invertible. A test compares the port against the reference formula across
+sizes and 8/16/24/32bpp.
 
 ## Image utilities
 
@@ -127,13 +135,51 @@ Ported from [tex-decoder](https://github.com/hearhellacopters/tex-decoder)'s
 - **Cropper** - `texc_crop` (tex-decoder `cropImage`): copy a rectangle out
   of a raw image with bounds validation.
 
+## Releasing
+
+`tools/make_release.py` packages a release zip from the built artifacts:
+
+```
+tex_codec_v<version>.zip
+  wasm/    tex_codec.js, tex_codec.wasm, tex_codec_api.mjs, .d.ts
+  cli/     texc.exe, tex_codec.lib
+  include/ tex_codec.h
+  README.md, CHANGELOG.md
+```
+
+Build everything first (the zip needs both the native and the Emscripten
+output), then package:
+
+```bash
+cmake --build build --config Release
+cd wasm && ./build_wasm.sh ../dist && cd ..
+cmake --build build --config Release --target release   # or: python tools/make_release.py
+```
+
+The version comes from `include/tex_codec.h`, and the script **refuses to
+package** if `texc.exe` or `dist/tex_codec_api.mjs` report a different one -
+so a zip can never ship stale artifacts under a new version number.
+
+To also create the GitHub release, using that version's `CHANGELOG.md`
+section verbatim as the release notes:
+
+```bash
+python tools/make_release.py --publish          # add --draft to stage it first
+```
+
+Publishing needs a clean working tree (it refuses otherwise) and either the
+[`gh` CLI](https://cli.github.com) authenticated via `gh auth login`, or a
+`GITHUB_TOKEN` environment variable with `repo` scope - the token is read
+from the environment and never printed. It tags `v<version>` and attaches
+the zip.
+
 ## Versioning
 
 The version is declared **once**, in `include/tex_codec.h`:
 
 ```c
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 2
+#define TEXC_VERSION_MINOR 3
 #define TEXC_VERSION_PATCH 0
 ```
 
@@ -154,9 +200,9 @@ Query it at runtime:
 | | |
 |---|---|
 | `texc_version()` | packed `(major << 16) \| (minor << 8) \| patch` |
-| `texc_version_string()` | `"1.2.0"` |
-| `texc_build_info()` | `tex_codec 1.2.0 (git 3f2a1b8, built Aug 19 2026, MSVC 1944, x64, Release)` |
-| `texc version` | the same build line (`texc version --short` prints just `1.2.0`) |
+| `texc_version_string()` | `"1.3.0"` |
+| `texc_build_info()` | `tex_codec 1.3.0 (git 3f2a1b8, built Sep 2 2026, MSVC 1944, x64, Release)` |
+| `texc version` | the same build line (`texc version --short` prints just `1.3.0`) |
 | `await tex.version()` / `tex.buildInfo()` | from JavaScript, plus `tex.checkVersion()` to catch a stale `.wasm` beside a newer wrapper |
 
 Compile-time checks are available too:

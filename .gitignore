@@ -6,3 +6,6 @@ tex_codec*.zip
 
 # Visual Studio / IDE state
 .vs/
+
+# Python bytecode (tools/)
+__pycache__/
