@@ -15,6 +15,27 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.3.0] - 2026-09-02
+
+### Fixed
+- **PS Vita RAW deswizzle** now matches `DeswizzlePSVitaRaw` ->
+  `SwizzleMasterFunction(Block32x32Unswizzle)` byte-for-byte. It previously
+  rounded the image up to whole 32x32 tiles, so `texc_swizzled_size`
+  over-reported (e.g. 8192 instead of 6144 bytes for 48x32 RGBA8) and real
+  G1T data - which is stored unpadded at `w*h*bpp/8` - was rejected with
+  `TEXC_ERR_BUFFER_TOO_SMALL`. The raw width is now used directly and
+  out-of-range texels are dropped exactly as the reference does. The block
+  -compressed Vita path (`convert_morton_psvita_dreamcast`) was already
+  correct and is unchanged.
+
+### Added
+- `TEXC_SWIZZLE_PSVITA` `arg` selects **bytes per pixel** for raw formats
+  (0 = the format's own size), mirroring the reference's `bitsPerPixel`
+  parameter - G1T ships 8/16/24/32bpp raw Vita textures, so 24bpp images
+  can now be deswizzled by passing 3.
+- A regression test compares the port against an independently written copy
+  of the reference mapping over 10 sizes x 4 bit depths.
+
 ## [1.2.0] - 2026-08-19
 
 ### Added

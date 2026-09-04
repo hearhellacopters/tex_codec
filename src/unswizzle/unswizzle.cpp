@@ -133,13 +133,65 @@ inline uint64_t map_morton8x8(uint32_t pw, uint32_t x, uint32_t y, uint32_t eb)
     return ((uint64_t)(y >> 3) * pw * 8 + (uint64_t)(x >> 3) * 64 + m) * eb;
 }
 
-/* ------------------------------------ PS Vita raw: 32x32 element tiles -- */
-/* Port of DeswizzlePSVitaRaw -> Block32x32Unswizzle (BlockMxNUnswizzle<32,32>):
- * 32x32 tiles in row-major tile order, row-major inside the tile. */
-inline uint64_t map_block32x32(uint32_t pw, uint32_t x, uint32_t y, uint32_t eb)
+/* ------------------------------------ PS Vita raw: 32x32 pixel tiles ---
+ * Port of DeswizzlePSVitaRaw -> SwizzleMasterFunction(Block32x32Unswizzle)
+ * (G1TFormatConvert.h). Reference mapping, in PIXEL units:
+ *
+ *   src = (y / 32) * (width * 32)
+ *       + (y % 32) * 32
+ *       + (x / 32) * (32 * 32)
+ *       + (x % 32);
+ *
+ * Two reference details that matter and are reproduced exactly:
+ *   - the RAW width is used, NOT a width rounded up to whole 32x32 tiles,
+ *     so the tiled buffer is exactly width * height * bytesPerPixel - the
+ *     size G1T stores (currentImageSize = w*h*bpp/8);
+ *   - a mapped offset that lands outside the image is SKIPPED rather than
+ *     treated as an error (the reference guards with
+ *     `sourceIndex < sourcePixelCount`). That happens whenever a dimension
+ *     is not a multiple of 32, and means the mapping is not a bijection
+ *     there: those texels stay zero and a reswizzle cannot restore them.
+ */
+inline uint64_t map_vita_raw_px(uint32_t w, uint32_t x, uint32_t y)
 {
-    return ((uint64_t)(y >> 5) * pw * 32 + (uint64_t)(y & 31) * 32 +
-            (uint64_t)(x >> 5) * 1024 + (x & 31)) * eb;
+    return (uint64_t)(y >> 5) * ((uint64_t)w * 32) + (uint64_t)(y & 31) * 32 +
+           (uint64_t)(x >> 5) * 1024 + (x & 31);
+}
+
+/* Bytes per pixel for the raw Vita path: `arg` overrides the format's own
+ * element size, mirroring the reference's bitsPerPixel parameter (G1T uses
+ * 8/16/24/32bpp raw Vita textures; the comment at the call site notes 24bpp
+ * specifically). 0 = use the format's size. Returns 0 if unusable. */
+inline uint32_t vita_raw_bpp(const Grid &g, uint32_t arg)
+{
+    const uint32_t eb = arg ? arg : g.eb;
+    return (eb >= 1 && eb <= 16) ? eb : 0;
+}
+
+int convert_vita_raw(const Grid &g, uint32_t arg,
+                     const uint8_t *src, size_t src_size,
+                     uint8_t *dst, size_t dst_size, bool to_linear)
+{
+    const uint32_t bpp = vita_raw_bpp(g, arg);
+    if (!bpp) return TEXC_ERR_INVALID_ARG;
+    const uint64_t pixels = (uint64_t)g.ew * g.eh;
+    const uint64_t bytes = pixels * bpp;
+    if (bytes > (uint64_t)SIZE_MAX) return TEXC_ERR_INVALID_ARG;
+    if (src_size < bytes || dst_size < bytes) return TEXC_ERR_BUFFER_TOO_SMALL;
+
+    memset(dst, 0, (size_t)bytes);       /* unmapped texels stay zero */
+    for (uint32_t y = 0; y < g.eh; ++y) {
+        for (uint32_t x = 0; x < g.ew; ++x) {
+            const uint64_t sw = map_vita_raw_px(g.ew, x, y);
+            if (sw >= pixels) continue;  /* reference skips out-of-range */
+            const uint64_t lin = (uint64_t)y * g.ew + x;
+            if (to_linear)
+                memcpy(dst + (size_t)(lin * bpp), src + (size_t)(sw * bpp), bpp);
+            else
+                memcpy(dst + (size_t)(sw * bpp), src + (size_t)(lin * bpp), bpp);
+        }
+    }
+    return TEXC_OK;
 }
 
 /* --------------------------------------- PSP: 16-byte x 8-row tiles ----- */
@@ -622,8 +674,11 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
     }
 
     case TEXC_SWIZZLE_PSVITA:
-        if (g.bw == 1)
-            return (uint64_t)align_up(g.ew, 32) * align_up(g.eh, 32) * g.eb;
+        if (g.bw == 1) {
+            /* raw: DeswizzlePSVitaRaw works on exactly w*h*bpp bytes */
+            const uint32_t bpp = vita_raw_bpp(g, arg);
+            return bpp ? (uint64_t)g.ew * g.eh * bpp : 0;
+        }
         return (uint64_t)next_pow2(g.ew) * next_pow2(g.eh) * g.eb;
 
     case TEXC_SWIZZLE_X360: {
@@ -736,17 +791,11 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
                        });
     }
 
-    case TEXC_SWIZZLE_PSVITA: {
-        if (g.bw == 1) {
-            const uint64_t ts = tiled_size_impl(mode, g, width, height, arg);
-            const uint32_t pw = align_up(g.ew, 32);
-            return run_map(g, ts, src, src_size, dst, dst_size, dir_to_linear,
-                           [&](uint32_t x, uint32_t y) {
-                               return map_block32x32(pw, x, y, g.eb);
-                           });
-        }
+    case TEXC_SWIZZLE_PSVITA:
+        if (g.bw == 1)
+            return convert_vita_raw(g, arg, src, src_size, dst, dst_size,
+                                    dir_to_linear);
         return convert_vita_bc(g, src, src_size, dst, dst_size, dir_to_linear);
-    }
 
     case TEXC_SWIZZLE_X360:
         return convert_x360(g, arg, src, src_size, dst, dst_size, dir_to_linear);
@@ -888,6 +937,19 @@ bool roundtrip(texc_swizzle_mode mode, const char *mname,
         fprintf(stderr, "FAIL: %s (tiled=%zu lin=%zu)\n", label, tiled, lin);
         ++g_failures;
         return false;
+    }
+
+    /* PS Vita RAW is faithful to DeswizzlePSVitaRaw, which drops texels
+     * whose mapped offset falls outside the image - that happens when a
+     * dimension is not a multiple of 32, so the map is not invertible
+     * there and a roundtrip cannot be expected to be the identity. */
+    uint32_t fbw = 0, fbh = 0, fbb = 0;
+    texc_block_dims(fmt, &fbw, &fbh, &fbb);
+    if (mode == TEXC_SWIZZLE_PSVITA && fbw == 1 &&
+        ((w % 32) || (h % 32))) {
+        printf("  skip %s %s %ux%u (raw map is lossy off 32px grid)\n",
+               mname, fname, w, h);
+        return true;
     }
 
     std::vector<uint8_t> src(lin), mid(tiled, 0xEE), out(lin, 0xCD);

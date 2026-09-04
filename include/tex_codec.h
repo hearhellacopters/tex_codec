@@ -49,7 +49,7 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 2
+#define TEXC_VERSION_MINOR 3
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
@@ -307,7 +307,18 @@ TEXC_API size_t texc_swizzled_size(texc_swizzle_mode mode, texc_format format,
  *                auto-select from the mip height like the hardware does.
  *   WIIU       : GX2 swizzle value from the texture header (usually 0).
  *   X360       : texel pitch override in bytes, or 0 for default.
+ *   PSVITA     : for RAW (non-block) formats, bytes per pixel, or 0 to use
+ *                the format's own size. G1T drives the Vita raw path from
+ *                bitsPerPixel and ships 8/16/24/32bpp raw textures, so pass
+ *                3 to deswizzle a 24bpp image as RGBA8-shaped data. Ignored
+ *                for block-compressed formats.
  *   all others : pass 0.
+ *
+ * Note on PS Vita RAW: this reproduces DeswizzlePSVitaRaw exactly, which
+ * uses the raw width (the tiled buffer is exactly w*h*bpp, NOT rounded up
+ * to whole 32x32 tiles) and silently drops texels whose mapped offset falls
+ * outside the image. That happens only when a dimension is not a multiple
+ * of 32, and it makes the mapping non-invertible there.
  */
 /* UNSWIZZLE: platform-tiled -> linear row-major (the direction you need
  * BEFORE decoding console data). */

@@ -562,6 +562,84 @@ static void test_pica_etc1(void) {
     printf("  PICA200 ETC1 container checks done\n");
 }
 
+/* PS Vita RAW deswizzle must match DeswizzlePSVitaRaw ->
+ * SwizzleMasterFunction(Block32x32Unswizzle) from G1TFormatConvert.h
+ * byte-for-byte. The reference mapping is reproduced here independently so
+ * a regression in the port is caught rather than compared against itself.
+ *
+ * G1T drives this path with bitsPerPixel (raw Vita textures are 8/16/24/32
+ * bpp - the call site notes 24bpp), so the bytes-per-pixel `arg` override
+ * is swept too. */
+static void test_vita_raw(void) {
+    struct { uint32_t w, h; } sizes[] = {
+        { 32, 32 }, { 64, 64 }, { 256, 128 }, { 128, 256 }, { 512, 512 },
+        { 16, 16 }, { 48, 32 }, { 37, 23 }, { 96, 64 }, { 33, 33 },
+    };
+    int mismatches = 0, cases = 0;
+
+    for (size_t si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
+        const uint32_t w = sizes[si].w, h = sizes[si].h;
+        const uint64_t pixels = (uint64_t)w * h;
+
+        for (uint32_t bpp = 1; bpp <= 4; bpp++) {
+            const size_t bytes = (size_t)(pixels * bpp);
+            std::vector<uint8_t> tiled(bytes);
+            for (size_t i = 0; i < bytes; i++)
+                tiled[i] = (uint8_t)(i * 7 + (i >> 8));
+
+            /* independent reference */
+            std::vector<uint8_t> ref(bytes, 0);
+            for (uint32_t y = 0; y < h; y++)
+                for (uint32_t x = 0; x < w; x++) {
+                    uint64_t sw = (uint64_t)(y / 32) * ((uint64_t)w * 32) +
+                                  (uint64_t)(y % 32) * 32 +
+                                  (uint64_t)(x / 32) * (32 * 32) + (x % 32);
+                    if (sw >= pixels) continue;      /* reference skips */
+                    uint64_t lin = (uint64_t)y * w + x;
+                    memcpy(&ref[(size_t)(lin * bpp)],
+                           &tiled[(size_t)(sw * bpp)], bpp);
+                }
+
+            /* arg = bytes-per-pixel override; 0 means the format's own 4 */
+            const uint32_t arg = (bpp == 4) ? 0 : bpp;
+            CHECK(texc_swizzled_size(TEXC_SWIZZLE_PSVITA, TEXC_FORMAT_RGBA8,
+                                     w, h, arg) == bytes,
+                  "Vita raw %ux%u @%ubpp: swizzled_size != w*h*bpp", w, h, bpp);
+
+            std::vector<uint8_t> mine(bytes, 0xCD);
+            int rc = texc_unswizzle(TEXC_SWIZZLE_PSVITA, TEXC_FORMAT_RGBA8,
+                                    w, h, tiled.data(), tiled.size(),
+                                    mine.data(), mine.size(), arg);
+            CHECK(rc == TEXC_OK, "Vita raw %ux%u @%ubpp: rc=%d", w, h, bpp, rc);
+            if (rc == TEXC_OK &&
+                memcmp(ref.data(), mine.data(), bytes) != 0)
+                mismatches++;
+            cases++;
+        }
+    }
+    CHECK(mismatches == 0,
+          "Vita raw deswizzle differs from the reference in %d/%d cases",
+          mismatches, cases);
+
+    /* On the 32px grid the map is a bijection, so reswizzle restores it. */
+    {
+        const uint32_t w = 64, h = 64;
+        std::vector<uint8_t> lin(w * h * 4), tiled(w * h * 4), back(w * h * 4);
+        rng_state = 0x5EED;
+        for (auto &b : lin) b = (uint8_t)rng();
+        CHECK(texc_reswizzle(TEXC_SWIZZLE_PSVITA, TEXC_FORMAT_RGBA8, w, h,
+                             lin.data(), lin.size(), tiled.data(),
+                             tiled.size(), 0) == TEXC_OK, "Vita reswizzle rc");
+        CHECK(texc_unswizzle(TEXC_SWIZZLE_PSVITA, TEXC_FORMAT_RGBA8, w, h,
+                             tiled.data(), tiled.size(), back.data(),
+                             back.size(), 0) == TEXC_OK, "Vita unswizzle rc");
+        CHECK(memcmp(lin.data(), back.data(), lin.size()) == 0,
+              "Vita raw reswizzle->unswizzle not identity on the 32px grid");
+    }
+
+    printf("  PS Vita raw: %d cases match the reference\n", cases);
+}
+
 static void test_error_paths(void) {
     uint8_t buf[64] = {0};
     CHECK(texc_decode(TEXC_FORMAT_BC1, nullptr, 0, 4, 4, buf, 64) ==
@@ -669,6 +747,7 @@ int main(void) {
     test_reswizzle_alias();
 
     test_pica_etc1();
+    test_vita_raw();
 
     printf("\n[5/6] version + error paths\n");
     test_version();

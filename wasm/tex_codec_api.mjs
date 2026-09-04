@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.2.0";
+export const VERSION = "1.3.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -86,6 +86,9 @@ export const SwizzleMode = Object.freeze({
   /** Tegra X1 block-linear GOBs; `arg` = log2 block height (0-5) or
    *  {@link SwitchBlockHeightAuto}. */
   SWITCH: 3,
+  /** GXM Morton/Z-order. For RAW (non-block) formats `arg` is bytes per
+   *  pixel (0 = the format's own size); G1T ships 8/16/24/32bpp raw Vita
+   *  textures, so pass 3 for a 24bpp image. */
   PSVITA: 4,
   /** `arg` = texel byte pitch override, 0 = default. */
   X360: 5,
