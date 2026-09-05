@@ -15,6 +15,26 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.4.0] - 2026-09-04
+
+### Fixed
+- **PS Vita raw unswizzling through WebAssembly** returned a wrongly sized
+  buffer whenever the 1.3.0 bytes-per-pixel `arg` was used. The C core was
+  correct, but the `*_alloc` helpers behind the JS wrapper sized the linear
+  side with `texc_encoded_size()`, which knows nothing about the override -
+  so a 64x64 24bpp image came back as 16384 bytes (w*h*4) instead of 12288,
+  with a garbage tail. Native callers passing their own buffers were
+  unaffected.
+
+### Added
+- `texc_unswizzled_size(mode, format, w, h, arg)` - the size of the linear
+  side of a conversion, honouring the PS Vita raw `arg`. Exposed in
+  WebAssembly and as `swizzler.unswizzledSize()` in the JS wrapper. Prefer
+  it over `texc_encoded_size()` whenever you pass a non-zero `arg`.
+- The WASM smoke test now checks the Vita raw path against the reference
+  mapping across 4 sizes x 4 bit depths, so the JS layer is covered too and
+  not just the C core.
+
 ## [1.3.0] - 2026-09-02
 
 ### Fixed

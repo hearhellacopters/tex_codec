@@ -110,6 +110,11 @@ the test suite. Supported layouts:
 parsing is intentionally left to the adopting project - this library 
 is the conversion core.
 
+When you pass a non-zero `arg`, size the linear side with
+`texc_unswizzled_size(mode, format, w, h, arg)` rather than
+`texc_encoded_size()` - the format alone cannot describe the PS Vita raw
+bytes-per-pixel override.
+
 **PS Vita raw** reproduces `DeswizzlePSVitaRaw` exactly: the tiled buffer
 is `width * height * bytesPerPixel` (the raw width is used, *not* rounded up
 to whole 32x32 tiles), and texels whose mapped offset falls outside the
@@ -179,7 +184,7 @@ The version is declared **once**, in `include/tex_codec.h`:
 
 ```c
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 3
+#define TEXC_VERSION_MINOR 4
 #define TEXC_VERSION_PATCH 0
 ```
 
@@ -200,9 +205,9 @@ Query it at runtime:
 | | |
 |---|---|
 | `texc_version()` | packed `(major << 16) \| (minor << 8) \| patch` |
-| `texc_version_string()` | `"1.3.0"` |
-| `texc_build_info()` | `tex_codec 1.3.0 (git 3f2a1b8, built Sep 2 2026, MSVC 1944, x64, Release)` |
-| `texc version` | the same build line (`texc version --short` prints just `1.3.0`) |
+| `texc_version_string()` | `"1.4.0"` |
+| `texc_build_info()` | `tex_codec 1.4.0 (git 3f2a1b8, built Sep 2 2026, MSVC 1944, x64, Release)` |
+| `texc version` | the same build line (`texc version --short` prints just `1.4.0`) |
 | `await tex.version()` / `tex.buildInfo()` | from JavaScript, plus `tex.checkVersion()` to catch a stale `.wasm` beside a newer wrapper |
 
 Compile-time checks are available too:

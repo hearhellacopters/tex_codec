@@ -255,6 +255,42 @@ try {
         "PICA helpers + named exports present");
 }
 
+/* ---- PS Vita raw: wasm must match the reference, incl. the bpp arg ---- */
+{
+  const refVita = (tiled, w, h, bpp) => {
+    const px = w * h, out = new Uint8Array(px * bpp);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const sw = Math.floor(y / 32) * (w * 32) + (y % 32) * 32
+               + Math.floor(x / 32) * 1024 + (x % 32);
+      if (sw >= px) continue;                       // reference drops these
+      out.set(tiled.subarray(sw * bpp, sw * bpp + bpp), (y * w + x) * bpp);
+    }
+    return out;
+  };
+  let bad = 0, n = 0;
+  for (const [w, h] of [[64, 64], [256, 128], [48, 32], [37, 23]])
+    for (const bpp of [1, 2, 3, 4]) {
+      const bytes = w * h * bpp, arg = bpp === 4 ? 0 : bpp;
+      const tiled = new Uint8Array(bytes).map((_, i) => (i * 7 + (i >> 8)) & 0xff);
+      const lin = await tex.swizzler.unswizzledSize(SwizzleMode.PSVITA,
+                                                    TexFormat.RGBA8, w, h, arg);
+      const got = await tex.swizzler.unswizzle(SwizzleMode.PSVITA,
+                                               TexFormat.RGBA8, tiled, w, h, arg);
+      const ref = refVita(tiled, w, h, bpp);
+      if (!(lin === bytes && got.length === bytes && ref.every((v, i) => v === got[i])))
+        bad++;
+      n++;
+    }
+  check(bad === 0, `PS Vita raw: ${n - bad}/${n} wasm cases match the reference`);
+
+  const w = 64, h = 64, bytes = w * h * 3;
+  const lin = new Uint8Array(bytes).map((_, i) => (i * 13 + 5) & 0xff);
+  const t = await tex.swizzler.reswizzlePSVita(TexFormat.RGBA8, lin, w, h, 3);
+  const back = await tex.swizzler.unswizzlePSVita(TexFormat.RGBA8, t, w, h, 3);
+  check(back.length === bytes && back.every((v, i) => v === lin[i]),
+        "PS Vita 24bpp reswizzle->unswizzle identity");
+}
+
 /* ---- reswizzle raw exports ---- */
 check(typeof mod._texc_reswizzle === "function" &&
       typeof mod._texc_reswizzle_ps4 === "function" &&

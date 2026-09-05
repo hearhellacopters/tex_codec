@@ -722,6 +722,30 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
 
 /* ===================================================== public interface = */
 
+size_t linear_size(texc_swizzle_mode mode, texc_format fmt,
+                   uint32_t width, uint32_t height, uint32_t arg)
+{
+    if (mode < TEXC_SWIZZLE_NONE || mode >= TEXC_SWIZZLE_MODE_COUNT)
+        return 0;
+    if (width == 0 || height == 0)
+        return 0;
+    Grid g;
+    if (!get_grid(fmt, width, height, &g))
+        return 0;
+
+    /* PS Vita raw is the one layout whose element size can be overridden
+     * (the reference's bitsPerPixel), so the linear side is w*h*bpp rather
+     * than the format's own encoded size. */
+    uint32_t eb = g.eb;
+    if (mode == TEXC_SWIZZLE_PSVITA && g.bw == 1) {
+        eb = vita_raw_bpp(g, arg);
+        if (!eb)
+            return 0;
+    }
+    const uint64_t sz = (uint64_t)g.ew * g.eh * eb;
+    return sz > (uint64_t)SIZE_MAX ? 0 : (size_t)sz;
+}
+
 size_t swizzled_size(texc_swizzle_mode mode, texc_format fmt,
                      uint32_t width, uint32_t height, uint32_t arg)
 {
@@ -916,7 +940,7 @@ void check(bool ok, const char *what)
     }
 }
 
-size_t linear_size(texc_format fmt, uint32_t w, uint32_t h)
+size_t format_linear_size(texc_format fmt, uint32_t w, uint32_t h)
 {
     uint32_t bw, bh, bb;
     texc_block_dims(fmt, &bw, &bh, &bb);
@@ -928,7 +952,7 @@ bool roundtrip(texc_swizzle_mode mode, const char *mname,
                uint32_t w, uint32_t h, uint32_t arg)
 {
     char label[160];
-    const size_t lin = linear_size(fmt, w, h);
+    const size_t lin = format_linear_size(fmt, w, h);
     const size_t tiled = texc::swizzled_size(mode, fmt, w, h, arg);
 
     snprintf(label, sizeof label, "%s %s %ux%u arg=%08x swizzled_size",
@@ -1030,7 +1054,7 @@ int main()
         size_t s = texc::swizzled_size(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_BC1,
                                        64, 64, 0xFFFFFFFFu);
         check(s != 0 && (s % 512) == 0, "SWITCH size is GOB aligned");
-        check(s >= linear_size(TEXC_FORMAT_BC1, 64, 64), "SWITCH size >= linear");
+        check(s >= format_linear_size(TEXC_FORMAT_BC1, 64, 64), "SWITCH size >= linear");
 
         /* X360 pads to 32x32-block macro tiles: 64x64 BC1 = 16x16 blocks
          * -> 32x32 blocks * 8B. */
@@ -1043,7 +1067,7 @@ int main()
 
         /* DX12 <= 64KB stays linear. */
         s = texc::swizzled_size(TEXC_SWIZZLE_DX12_64KB, TEXC_FORMAT_BC1, 256, 128, 0);
-        check(s == linear_size(TEXC_FORMAT_BC1, 256, 128),
+        check(s == format_linear_size(TEXC_FORMAT_BC1, 256, 128),
               "DX12 <=64KB not swizzled");
         s = texc::swizzled_size(TEXC_SWIZZLE_DX12_64KB, TEXC_FORMAT_BC1, 512, 512, 0);
         check(s == 2 * 65536, "DX12 512x512 BC1 = 2 x 64KB tiles");
@@ -1051,7 +1075,7 @@ int main()
 
     /* Buffer bounds: short tiled buffer must be rejected, not overrun. */
     {
-        const size_t lin = linear_size(TEXC_FORMAT_BC7, 64, 64);
+        const size_t lin = format_linear_size(TEXC_FORMAT_BC7, 64, 64);
         const size_t tiled = texc::swizzled_size(TEXC_SWIZZLE_PS4,
                                                  TEXC_FORMAT_BC7, 64, 64, 0);
         std::vector<uint8_t> a(lin, 1), b(tiled, 0);

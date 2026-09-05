@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.3.0";
+export const VERSION = "1.4.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -369,6 +369,23 @@ export class TexSwizzler {
   async swizzledSize(mode, format, width, height, arg = 0) {
     const mod = await this._owner._mod();
     return mod._texc_swizzled_size(mode, format, width, height, arg);
+  }
+
+  /**
+   * Size in bytes of the LINEAR side - what {@link TexSwizzler#unswizzle}
+   * returns and {@link TexSwizzler#reswizzle} consumes. Normally the
+   * format's encoded size, but PS Vita raw honours the bytes-per-pixel
+   * `arg`, so prefer this whenever you pass a non-zero `arg`.
+   * @param {number} mode a {@link SwizzleMode} value
+   * @param {number} format a {@link TexFormat} value
+   * @param {number} width
+   * @param {number} height
+   * @param {number} [arg=0]
+   * @returns {Promise<number>}
+   */
+  async unswizzledSize(mode, format, width, height, arg = 0) {
+    const mod = await this._owner._mod();
+    return mod._texc_unswizzled_size(mode, format, width, height, arg);
   }
 
   /**

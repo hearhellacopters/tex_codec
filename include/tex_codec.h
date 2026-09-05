@@ -49,7 +49,7 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 3
+#define TEXC_VERSION_MINOR 4
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
@@ -296,6 +296,16 @@ typedef enum texc_swizzle_mode {
 TEXC_API size_t texc_swizzled_size(texc_swizzle_mode mode, texc_format format,
                                    uint32_t width, uint32_t height,
                                    uint32_t arg);
+
+/* Size in bytes of the LINEAR side of a conversion - the output of
+ * texc_unswizzle, the input of texc_reswizzle. This is normally just
+ * texc_encoded_size(format, width, height), but PS Vita raw honours the
+ * bytes-per-pixel `arg` override, so it cannot be derived from the format
+ * alone; prefer this whenever you pass a non-zero `arg`. 0 if invalid. */
+TEXC_API size_t texc_unswizzled_size(texc_swizzle_mode mode,
+                                     texc_format format,
+                                     uint32_t width, uint32_t height,
+                                     uint32_t arg);
 
 /* Convert platform-tiled data to linear row-major block order.
  * width/height are in PIXELS of the original image; block geometry is taken

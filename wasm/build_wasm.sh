@@ -38,7 +38,7 @@ if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
     GIT_HASH="${GIT_HASH}-dirty"
 fi
 
-EXPORTED_FUNCTIONS='["_texc_version","_texc_version_string","_texc_build_info","_texc_format_name","_texc_result_str","_texc_block_dims","_texc_encoded_size","_texc_decoded_size","_texc_can_decode","_texc_can_encode","_texc_decode","_texc_decode_f32","_texc_encode","_texc_encode_ex","_texc_encode_f32","_texc_swizzled_size","_texc_unswizzle","_texc_swizzle","_texc_reswizzle","_texc_decode_swizzled","_texc_profile_name","_texc_profile_bytes_per_pixel","_texc_convert_profile","_texc_flip_y","_texc_flip_x","_texc_crop","_texc_alloc","_texc_free","_malloc","_free"]'
+EXPORTED_FUNCTIONS='["_texc_version","_texc_version_string","_texc_build_info","_texc_format_name","_texc_result_str","_texc_block_dims","_texc_encoded_size","_texc_decoded_size","_texc_can_decode","_texc_can_encode","_texc_decode","_texc_decode_f32","_texc_encode","_texc_encode_ex","_texc_encode_f32","_texc_swizzled_size","_texc_unswizzled_size","_texc_unswizzle","_texc_swizzle","_texc_reswizzle","_texc_decode_swizzled","_texc_profile_name","_texc_profile_bytes_per_pixel","_texc_convert_profile","_texc_flip_y","_texc_flip_x","_texc_crop","_texc_alloc","_texc_free","_malloc","_free"]'
 
 em++ "${SOURCES[@]}" \
     -I../include \

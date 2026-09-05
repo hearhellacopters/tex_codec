@@ -621,6 +621,20 @@ static void test_vita_raw(void) {
           "Vita raw deswizzle differs from the reference in %d/%d cases",
           mismatches, cases);
 
+    /* texc_unswizzled_size must honour the bpp override, otherwise callers
+     * that allocate from it (the WASM *_alloc helpers do) get a buffer of
+     * the wrong length with a garbage tail. */
+    for (uint32_t bpp = 1; bpp <= 4; bpp++) {
+        const uint32_t arg = (bpp == 4) ? 0 : bpp;
+        CHECK(texc_unswizzled_size(TEXC_SWIZZLE_PSVITA, TEXC_FORMAT_RGBA8,
+                                   64, 64, arg) == (size_t)64 * 64 * bpp,
+              "unswizzled_size @%ubpp != w*h*bpp", bpp);
+    }
+    /* every other mode: the linear side is just the format's encoded size */
+    CHECK(texc_unswizzled_size(TEXC_SWIZZLE_PS4, TEXC_FORMAT_BC7, 64, 64, 0)
+              == texc_encoded_size(TEXC_FORMAT_BC7, 64, 64),
+          "unswizzled_size(PS4, BC7) != encoded_size");
+
     /* On the 32px grid the map is a bijection, so reswizzle restores it. */
     {
         const uint32_t w = 64, h = 64;

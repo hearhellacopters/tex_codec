@@ -140,6 +140,9 @@ export interface TexCodecModule {
                             dstSize: number, alphaThreshold: number): number;
   _texc_swizzled_size(mode: number, format: number, width: number,
                       height: number, arg: number): number;
+  /** Linear-side size; honours the PS Vita raw bytes-per-pixel `arg`. */
+  _texc_unswizzled_size(mode: number, format: number, width: number,
+                        height: number, arg: number): number;
   _texc_unswizzle(mode: number, format: number, width: number, height: number,
                   src: Ptr, srcSize: number, dst: Ptr, dstSize: number,
                   arg: number): number;
@@ -329,6 +332,10 @@ export declare class TexSwizzler {
   swizzledSize(mode: SwizzleModeValue | number,
                format: TexFormatValue | number, width: number, height: number,
                arg?: number): Promise<number>;
+  /** Size of the linear side; honours the PS Vita raw bytes-per-pixel arg. */
+  unswizzledSize(mode: SwizzleModeValue | number,
+                 format: TexFormatValue | number, width: number,
+                 height: number, arg?: number): Promise<number>;
   /** UNSWIZZLE: platform-tiled -> linear row-major. */
   unswizzle(mode: SwizzleModeValue | number, format: TexFormatValue | number,
             data: Uint8Array, width: number, height: number,

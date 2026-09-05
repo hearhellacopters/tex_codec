@@ -464,6 +464,14 @@ size_t texc_swizzled_size(texc_swizzle_mode mode, texc_format format,
     return texc::swizzled_size(mode, format, width, height, arg);
 }
 
+size_t texc_unswizzled_size(texc_swizzle_mode mode, texc_format format,
+                            uint32_t width, uint32_t height, uint32_t arg) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format))
+        return 0;
+    if (!swizzle_target(format, height)) return 0;
+    return texc::linear_size(mode, format, width, height, arg);
+}
+
 int texc_unswizzle(texc_swizzle_mode mode, texc_format format,
                    uint32_t width, uint32_t height,
                    const uint8_t *src, size_t src_size,

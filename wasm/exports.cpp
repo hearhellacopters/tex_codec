@@ -122,7 +122,11 @@ TEXC_API uint8_t *texc_swizzle_alloc(texc_swizzle_mode mode,
                                      uint32_t width, uint32_t height,
                                      uint32_t arg, int to_linear,
                                      size_t *out_size) {
-    size_t need = to_linear ? texc_encoded_size(format, width, height)
+    /* texc_unswizzled_size, not texc_encoded_size: the linear side honours
+     * the PS Vita raw bytes-per-pixel `arg` override, which the format
+     * alone does not describe. */
+    size_t need = to_linear ? texc_unswizzled_size(mode, format, width,
+                                                   height, arg)
                             : texc_swizzled_size(mode, format, width, height,
                                                  arg);
     if (need == 0) { g_last_error = TEXC_ERR_INVALID_ARG; return NULL; }

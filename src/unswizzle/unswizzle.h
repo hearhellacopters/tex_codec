@@ -22,6 +22,12 @@ namespace texc {
 size_t swizzled_size(texc_swizzle_mode mode, texc_format fmt,
                      uint32_t width, uint32_t height, uint32_t arg);
 
+/* Bytes of the LINEAR representation. Normally the format's own encoded
+ * size, but PS Vita raw honours the bytes-per-pixel `arg` override, so it
+ * cannot be derived from the format alone. 0 if invalid. */
+size_t linear_size(texc_swizzle_mode mode, texc_format fmt,
+                   uint32_t width, uint32_t height, uint32_t arg);
+
 /* dir_to_linear == true  : src tiled  -> dst linear (unswizzle)
  * dir_to_linear == false : src linear -> dst tiled  (swizzle)     */
 int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
