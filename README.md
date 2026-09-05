@@ -18,6 +18,7 @@ Includes Web Assembly for `.wasm`, `.js` and `.ts` output.
 | ASTC | LDR + HDR blocks, 2D block sizes 4x4 ... 12x12 | ✅ | ✅ (valid-bitstream baseline) |
 | ATC | ATC RGB, RGBA explicit, RGBA interpolated | ✅ | ✅ |
 | PICA200 (3DS) | `PICA_ETC1_RGB8` (GPU_ETC1), `PICA_ETC1_RGB8A4` (GPU_ETC1A4) | ✅ | ✅ |
+| GameCube / Wii (GX, TPL) | `WII_I4`, `WII_I8`, `WII_IA4`, `WII_IA8`, `WII_RGB565`, `WII_RGB5A3`, `WII_RGBA8`, `WII_CMPR`; paletted `WII_C4`, `WII_C8`, `WII_C14X2` | ✅ (paletted via `texc_decode_paletted`) | ✅ (not paletted) |
 | Raw | RGBA8 passthrough | ✅ | ✅ |
 
 Decode target is 8-bit RGBA (`texc_decode`) or float RGBA (`texc_decode_f32`,
@@ -66,6 +67,56 @@ part of the format, so this library keeps its usual top-left origin (use
 
 ```bash
 texc decode -i tex.bin -f PICA_ETC1_RGB8A4 -w 128 -h 128 -o out.png
+```
+
+### GameCube / Wii (GX "TPL" formats)
+
+Ported from Kerilk's `tpl.h` (noesis_bayonetta_pc), which is the decoder
+Project-G1M's `PLATFORM::RVL` path runs. "Wii swizzling" is really the GX
+tile layout plus per-format encoding, so it is modelled as a set of
+**formats** rather than a swizzle mode - decode/encode handle the tiling:
+
+- the image is a row-major grid of tiles, every tile 32 bytes (RGBA8: 64);
+  tile size per format: I4 8x8, I8/IA4 8x4, IA8/RGB565/RGB5A3/RGBA8 4x4,
+  CMPR 8x8, C4 8x8, C8 8x4, C14X2 4x4 - this is what `texc_block_dims`
+  reports, so sizes round up to whole tiles as the hardware stores them;
+- all multi-byte values are big-endian; 4bpp formats put the even column in
+  the high nibble; expansion is `v*255/max` (integer), as the reference;
+- `RGB5A3`: bit 15 set = RGB555 opaque, clear = A3+RGB444;
+- `RGBA8`: each 64-byte tile is a 32-byte AR plane then a 32-byte GB plane;
+- `CMPR`: an 8x8 tile is four DXT1-style 4x4 sub-blocks (TL, TR, BL, BR)
+  with big-endian colour words and MSB-first selectors; `c0 <= c1` selects
+  3-colour mode with a transparent 4th entry. Encoding reuses the BC1
+  encoder, so `alpha_threshold` controls punchthrough here too.
+
+**Paletted formats** (`WII_C4`, `WII_C8`, `WII_C14X2`) need a palette of
+big-endian 16-bit `IA8` / `RGB565` / `RGB5A3` entries - for G1T content,
+an entry from the matching G1TL file (its `WiiPALETTE_TYPE` maps directly
+onto `texc_palette_format`). `texc_decode` returns `TEXC_ERR_NEEDS_PALETTE`
+for them; use `texc_decode_paletted`, sizing the palette with
+`texc_palette_size` (32 / 512 / 32768 bytes). Encoding paletted formats is
+not supported (no palette generation).
+
+Project-G1M's `getNWiiFormat()` maps G1T pixel-format IDs like so:
+
+| Wii format | G1T pixel-format IDs |
+|---|---|
+| `WII_I4` | 0x2B, 0x2F |
+| `WII_I8` | 0x18, 0x28, 0x29, 0x2A, 0x2C, 0x30 |
+| `WII_IA4` | 0x2D |
+| `WII_IA8` | 0x26, 0x27, 0x2E |
+| `WII_RGB565` | 0x1C |
+| `WII_RGB5A3` | 0x25 |
+| `WII_RGBA8` | 0x0A, 0x13, 0x22 |
+| `WII_CMPR` | 0x10 |
+| `WII_C4` / `WII_C8` / `WII_C14X2` | 0x31 / 0x32 / 0x15, 0x33 |
+
+Cube maps and volume textures are simply consecutive 2D faces / slices;
+decode each with its own dimensions, as the reference does.
+
+```bash
+texc decode -i tex.bin -f WII_CMPR -w 256 -h 256 -o out.png
+texc decode -i tex.bin -f WII_C8 -w 128 -h 128 --palette pal.bin --palette-format rgb5a3 -o out.png
 ```
 
 ### Encoder options
@@ -184,7 +235,7 @@ The version is declared **once**, in `include/tex_codec.h`:
 
 ```c
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 4
+#define TEXC_VERSION_MINOR 5
 #define TEXC_VERSION_PATCH 0
 ```
 
@@ -205,9 +256,9 @@ Query it at runtime:
 | | |
 |---|---|
 | `texc_version()` | packed `(major << 16) \| (minor << 8) \| patch` |
-| `texc_version_string()` | `"1.4.0"` |
-| `texc_build_info()` | `tex_codec 1.4.0 (git 3f2a1b8, built Sep 2 2026, MSVC 1944, x64, Release)` |
-| `texc version` | the same build line (`texc version --short` prints just `1.4.0`) |
+| `texc_version_string()` | `"1.5.0"` |
+| `texc_build_info()` | `tex_codec 1.5.0 (git 3f2a1b8, built Sep 2 2026, MSVC 1944, x64, Release)` |
+| `texc version` | the same build line (`texc version --short` prints just `1.5.0`) |
 | `await tex.version()` / `tex.buildInfo()` | from JavaScript, plus `tex.checkVersion()` to catch a stale `.wasm` beside a newer wrapper |
 
 Compile-time checks are available too:

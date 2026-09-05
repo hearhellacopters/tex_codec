@@ -133,6 +133,13 @@ static const fmt_case k_cases[] = {
     { TEXC_FORMAT_ETC2_RGB_A_ATLAS,      4, true,  26.0, false },
     { TEXC_FORMAT_PICA_ETC1_RGB8,        3, false, 26.0, false },
     { TEXC_FORMAT_PICA_ETC1_RGB8A4,      4, true,  26.0, false },
+    /* Wii colour formats; the intensity ones need a grey input and are
+     * covered in test_wii() instead. RGB5A3's alpha is only 3-bit, so it is
+     * compared on RGB and its alpha is checked separately there. */
+    { TEXC_FORMAT_WII_RGB565,            3, false, 30.0, false },
+    { TEXC_FORMAT_WII_RGB5A3,            3, true,  28.0, false },
+    { TEXC_FORMAT_WII_RGBA8,             4, true,  60.0, false },
+    { TEXC_FORMAT_WII_CMPR,              3, false, 26.0, false },
 };
 
 static void test_roundtrip(const fmt_case &fc, uint32_t w, uint32_t h) {
@@ -654,6 +661,187 @@ static void test_vita_raw(void) {
     printf("  PS Vita raw: %d cases match the reference\n", cases);
 }
 
+/* GameCube/Wii GX formats: known-answer checks derived from tpl.h's rules
+ * (big-endian, even column in the high nibble, v*255/max expansion, RGB5A3
+ * modes, RGBA8 AR/GB planes, CMPR sub-block order + MSB-first selectors),
+ * grey-input roundtrips for the intensity formats, and the palette API. */
+static void test_wii(void) {
+    /* --- sizes are whole tiles (32B; RGBA8 64B) --- */
+    CHECK(texc_encoded_size(TEXC_FORMAT_WII_I4, 8, 8) == 32, "I4 tile 32B");
+    /* I8 tiles are 8x4: a 16x8 image is 2x2 tiles = 4 * 32 bytes */
+    CHECK(texc_encoded_size(TEXC_FORMAT_WII_I8, 16, 8) == 128, "I8 8x4 tiles");
+    CHECK(texc_encoded_size(TEXC_FORMAT_WII_RGBA8, 4, 4) == 64, "RGBA8 tile 64B");
+    CHECK(texc_encoded_size(TEXC_FORMAT_WII_CMPR, 8, 8) == 32, "CMPR tile 32B");
+    CHECK(texc_encoded_size(TEXC_FORMAT_WII_I4, 1, 1) == 32, "rounds to a tile");
+
+    uint8_t out[8 * 8 * 4];
+
+    /* --- I4: even column = high nibble; expansion v*255/15 --- */
+    {
+        uint8_t t[32] = { 0 };
+        t[0] = 0xF3;                                /* (0,0)=15, (0,1)=3 */
+        CHECK(texc_decode(TEXC_FORMAT_WII_I4, t, 32, 8, 8, out, sizeof out) ==
+              TEXC_OK, "I4 decode rc");
+        CHECK(out[0] == 255 && out[3] == 255, "I4 even column -> high nibble");
+        CHECK(out[4] == 3 * 255 / 15, "I4 odd column = %d want %d", out[4],
+              3 * 255 / 15);
+    }
+    /* --- IA4: low nibble intensity, high nibble alpha --- */
+    {
+        uint8_t t[32] = { 0 };
+        t[0] = 0xA5;
+        texc_decode(TEXC_FORMAT_WII_IA4, t, 32, 8, 4, out, sizeof out);
+        CHECK(out[0] == 5 * 255 / 15 && out[3] == 10 * 255 / 15,
+              "IA4 nibbles: got I=%d A=%d", out[0], out[3]);
+    }
+    /* --- IA8 / RGB565 / RGB5A3: big-endian, both RGB5A3 modes --- */
+    {
+        uint8_t t[32] = { 0 };
+        t[0] = 0x80; t[1] = 0x40;                   /* IA8: A=0x80 I=0x40 */
+        texc_decode(TEXC_FORMAT_WII_IA8, t, 32, 4, 4, out, sizeof out);
+        CHECK(out[0] == 0x40 && out[3] == 0x80, "IA8 big-endian A|I");
+
+        t[0] = 0xF8; t[1] = 0x00;                   /* RGB565 pure red */
+        texc_decode(TEXC_FORMAT_WII_RGB565, t, 32, 4, 4, out, sizeof out);
+        CHECK(out[0] == 255 && out[1] == 0 && out[2] == 0 && out[3] == 255,
+              "RGB565 red");
+
+        t[0] = 0xFC; t[1] = 0x00;                   /* RGB5A3 555: r=31 */
+        texc_decode(TEXC_FORMAT_WII_RGB5A3, t, 32, 4, 4, out, sizeof out);
+        CHECK(out[0] == 255 && out[3] == 255, "RGB5A3 555 mode opaque red");
+        t[0] = 0x5F; t[1] = 0x00;                   /* A3=5, r=15 */
+        texc_decode(TEXC_FORMAT_WII_RGB5A3, t, 32, 4, 4, out, sizeof out);
+        CHECK(out[0] == 255 && out[3] == 5 * 255 / 7,
+              "RGB5A3 A3 mode: r=%d a=%d", out[0], out[3]);
+    }
+    /* --- RGBA8: 32-byte AR plane then 32-byte GB plane --- */
+    {
+        uint8_t t[64] = { 0 };
+        t[0] = 0x11; t[1] = 0x22;                   /* A, R of pixel 0 */
+        t[32] = 0x33; t[33] = 0x44;                 /* G, B of pixel 0 */
+        texc_decode(TEXC_FORMAT_WII_RGBA8, t, 64, 4, 4, out, sizeof out);
+        CHECK(out[0] == 0x22 && out[1] == 0x33 && out[2] == 0x44 &&
+              out[3] == 0x11, "RGBA8 AR/GB planes");
+    }
+    /* --- CMPR: sub-block order TL,TR,BL,BR; BE colours; MSB-first idx --- */
+    {
+        uint8_t t[32] = { 0 };
+        uint8_t *sb = t + 8;                        /* top-right sub-block */
+        sb[0] = 0xF8; sb[1] = 0x00;                 /* c0 = red   (BE)   */
+        sb[2] = 0x00; sb[3] = 0x1F;                 /* c1 = blue  (BE)   */
+        sb[4] = 0x1B;                               /* 00 01 10 11 -> j=0..3 */
+        texc_decode(TEXC_FORMAT_WII_CMPR, t, 32, 8, 8, out, sizeof out);
+        const uint8_t *row0 = out + 4 * 4;          /* row 0, column 4 */
+        CHECK(row0[0] == 255 && row0[2] == 0, "CMPR idx0 = c0 red");
+        CHECK(row0[4 + 2] == 255 && row0[4 + 0] == 0, "CMPR idx1 = c1 blue");
+        CHECK(row0[8 + 0] == 170 && row0[8 + 2] == 85,
+              "CMPR idx2 = (c1+2c0)/3: %d,%d", row0[8], row0[10]);
+        CHECK(row0[12 + 0] == 85 && row0[12 + 2] == 170, "CMPR idx3");
+        /* untouched TL sub-block: c0 == c1 == 0 is 3-colour mode, but index
+         * 0 selects c0 itself, which decodes as opaque black */
+        CHECK(out[0] == 0 && out[3] == 255,
+              "CMPR zero sub-block idx0 = c0 = opaque black, got a=%d", out[3]);
+        /* 3-colour mode: c0 <= c1 makes index 3 transparent black */
+        sb[0] = 0x00; sb[1] = 0x1F; sb[2] = 0xF8; sb[3] = 0x00; sb[4] = 0xFF;
+        texc_decode(TEXC_FORMAT_WII_CMPR, t, 32, 8, 8, out, sizeof out);
+        CHECK(row0[3] == 0 && row0[0] == 0, "CMPR 3-colour idx3 transparent");
+    }
+    /* --- tiles are row-major: for a 16x8 I8 (2x2 tiles of 8x4), the
+     * second tile (bytes 32..63) is pixel column 8, and the third tile
+     * (bytes 64..95) is pixel row 4 --- */
+    {
+        uint8_t t[128] = { 0 }, big[16 * 8 * 4];
+        t[32] = 0x77;
+        t[64] = 0x99;
+        CHECK(texc_decode(TEXC_FORMAT_WII_I8, t, sizeof t, 16, 8, big,
+                          sizeof big) == TEXC_OK, "I8 16x8 decode rc");
+        CHECK(big[8 * 4] == 0x77 && big[0] == 0, "I8 second tile at x=8");
+        CHECK(big[(4 * 16) * 4] == 0x99, "I8 third tile at y=4");
+    }
+
+    /* --- intensity roundtrips need grey input (r=g=b) --- */
+    {
+        const uint32_t w = 64, h = 64;
+        std::vector<uint8_t> img((size_t)w * h * 4), enc, dec((size_t)w * h * 4);
+        for (uint32_t y = 0; y < h; y++)
+            for (uint32_t x = 0; x < w; x++) {
+                uint8_t *p = &img[((size_t)y * w + x) * 4];
+                p[0] = p[1] = p[2] = (uint8_t)(x * 255 / (w - 1));
+                p[3] = (uint8_t)(y * 255 / (h - 1));
+            }
+        struct { texc_format f; double min_db; int max_a_err; } cases[] = {
+            { TEXC_FORMAT_WII_I4,  30.0, 0 },
+            { TEXC_FORMAT_WII_I8,  60.0, 0 },
+            { TEXC_FORMAT_WII_IA4, 30.0, 18 },
+            { TEXC_FORMAT_WII_IA8, 60.0, 0 },
+        };
+        for (auto &c : cases) {
+            enc.assign(texc_encoded_size(c.f, w, h), 0);
+            CHECK(texc_encode(c.f, img.data(), img.size(), w, h, enc.data(),
+                              enc.size()) == TEXC_OK, "%s encode",
+                  texc_format_name(c.f));
+            CHECK(texc_decode(c.f, enc.data(), enc.size(), w, h, dec.data(),
+                              dec.size()) == TEXC_OK, "%s decode",
+                  texc_format_name(c.f));
+            double p = psnr(img, dec, 3);
+            CHECK(p >= c.min_db, "%s grey PSNR %.1f < %.1f",
+                  texc_format_name(c.f), p, c.min_db);
+            bool has_alpha = (c.f == TEXC_FORMAT_WII_IA4 ||
+                              c.f == TEXC_FORMAT_WII_IA8);
+            int worst = 0;
+            for (size_t i = 3; i < img.size(); i += 4) {
+                int want = has_alpha ? img[i] : 255;
+                int d = abs(want - (int)dec[i]);
+                if (d > worst) worst = d;
+            }
+            CHECK(worst <= c.max_a_err, "%s alpha err %d > %d",
+                  texc_format_name(c.f), worst, c.max_a_err);
+            printf("  %-24s grey %6.2f dB\n", texc_format_name(c.f), p);
+        }
+    }
+
+    /* --- paletted: API surface + C4/IA8 known answer --- */
+    {
+        CHECK(texc_is_paletted(TEXC_FORMAT_WII_C4) &&
+              texc_is_paletted(TEXC_FORMAT_WII_C8) &&
+              texc_is_paletted(TEXC_FORMAT_WII_C14X2) &&
+              !texc_is_paletted(TEXC_FORMAT_WII_CMPR), "is_paletted");
+        CHECK(texc_palette_size(TEXC_FORMAT_WII_C4) == 32 &&
+              texc_palette_size(TEXC_FORMAT_WII_C8) == 512 &&
+              texc_palette_size(TEXC_FORMAT_WII_C14X2) == 32768 &&
+              texc_palette_size(TEXC_FORMAT_WII_RGB565) == 0, "palette_size");
+        CHECK(texc_can_encode(TEXC_FORMAT_WII_C8) == 0 &&
+              texc_can_encode(TEXC_FORMAT_WII_CMPR) == 1, "can_encode");
+
+        uint8_t t[32] = { 0 };
+        t[0] = 0x10;                            /* (0,0)=idx 1, (0,1)=idx 0 */
+        uint8_t pal[32] = { 0 };
+        pal[0] = 0xFF; pal[1] = 0x00;           /* entry 0: IA8 A=FF I=00 */
+        pal[2] = 0x80; pal[3] = 0xC0;           /* entry 1: A=80 I=C0     */
+        CHECK(texc_decode(TEXC_FORMAT_WII_C4, t, 32, 8, 8, out, sizeof out) ==
+              TEXC_ERR_NEEDS_PALETTE, "plain decode of C4 -> NEEDS_PALETTE");
+        CHECK(texc_decode_paletted(TEXC_FORMAT_WII_C4, t, 32, 8, 8, pal, 16,
+                                   TEXC_PALETTE_IA8, out, sizeof out) ==
+              TEXC_ERR_BUFFER_TOO_SMALL, "short palette rejected");
+        CHECK(texc_decode_paletted(TEXC_FORMAT_WII_C4, t, 32, 8, 8, pal, 32,
+                                   TEXC_PALETTE_IA8, out, sizeof out) ==
+              TEXC_OK, "C4 paletted decode rc");
+        CHECK(out[0] == 0xC0 && out[3] == 0x80, "C4 (0,0) -> entry 1: I=%d A=%d",
+              out[0], out[3]);
+        CHECK(out[4] == 0x00 && out[7] == 0xFF, "C4 (0,1) -> entry 0");
+
+        /* RGB5A3 palette entries decode through the same rules */
+        pal[2] = 0xFC; pal[3] = 0x00;           /* entry 1: 555 red */
+        texc_decode_paletted(TEXC_FORMAT_WII_C4, t, 32, 8, 8, pal, 32,
+                             TEXC_PALETTE_RGB5A3, out, sizeof out);
+        CHECK(out[0] == 255 && out[1] == 0 && out[3] == 255,
+              "C4 with RGB5A3 palette");
+        CHECK(texc_encode(TEXC_FORMAT_WII_C4, out, sizeof out, 8, 8, t, 32) ==
+              TEXC_ERR_UNSUPPORTED, "paletted encode unsupported");
+    }
+    printf("  Wii GX format checks done\n");
+}
+
 static void test_error_paths(void) {
     uint8_t buf[64] = {0};
     CHECK(texc_decode(TEXC_FORMAT_BC1, nullptr, 0, 4, 4, buf, 64) ==
@@ -762,6 +950,7 @@ int main(void) {
 
     test_pica_etc1();
     test_vita_raw();
+    test_wii();
 
     printf("\n[5/6] version + error paths\n");
     test_version();

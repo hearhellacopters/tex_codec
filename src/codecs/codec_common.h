@@ -120,6 +120,23 @@ int atc_encode(texc_format fmt, const uint8_t *src,
                uint32_t width, uint32_t height, uint8_t *dst,
                const texc_encode_options *opts);
 
+/* --------------------------------------------------------- Wii (wii.cpp) */
+/* GameCube/Wii GX ("TPL") formats. Paletted formats (C4/C8/C14X2) return
+ * TEXC_ERR_NEEDS_PALETTE from wii_decode and TEXC_ERR_UNSUPPORTED from
+ * wii_encode; decode them with wii_decode_paletted.                       */
+
+int wii_decode(texc_format fmt, const uint8_t *src, size_t src_size,
+               uint32_t width, uint32_t height, uint8_t *dst);
+int wii_decode_paletted(texc_format fmt, const uint8_t *src, size_t src_size,
+                        uint32_t width, uint32_t height,
+                        const uint8_t *palette, size_t palette_size,
+                        texc_palette_format palette_format, uint8_t *dst);
+int wii_encode(texc_format fmt, const uint8_t *src,
+               uint32_t width, uint32_t height, uint8_t *dst,
+               const texc_encode_options *opts);
+bool wii_is_paletted(texc_format fmt);
+size_t wii_palette_size(texc_format fmt);      /* required palette bytes */
+
 } /* namespace texc */
 
 #endif /* TEXC_CODEC_COMMON_H */

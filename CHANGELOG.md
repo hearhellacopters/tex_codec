@@ -15,6 +15,23 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.5.0] - 2026-09-04
+
+### Added
+- **GameCube / Wii GX ("TPL") formats**, ported from Kerilk's `tpl.h` as
+  used by Project-G1M's `PLATFORM::RVL` path: `WII_I4`, `WII_I8`, `WII_IA4`,
+  `WII_IA8`, `WII_RGB565`, `WII_RGB5A3`, `WII_RGBA8`, `WII_CMPR` (decode +
+  encode) and the paletted `WII_C4`, `WII_C8`, `WII_C14X2` (decode). The GX
+  tile layout (row-major 32-byte tiles, RGBA8 64; big-endian; even column
+  in the high nibble; RGB5A3 dual mode; RGBA8 AR/GB planes; CMPR as four
+  DXT1-style sub-blocks with MSB-first selectors) is handled inside the
+  formats, and block geometry is reported as the tile.
+- `texc_decode_paletted`, `texc_palette_size`, `texc_is_paletted` and
+  `texc_palette_format` (`IA8` / `RGB565` / `RGB5A3`, values matching a G1TL
+  entry's `WiiPALETTE_TYPE`), plus `TEXC_ERR_NEEDS_PALETTE`. Exposed in
+  WebAssembly (`decoder.decodePaletted`, `PaletteFormat`) and in the CLI
+  (`--palette`, `--palette-format`).
+
 ## [1.4.0] - 2026-09-04
 
 ### Fixed

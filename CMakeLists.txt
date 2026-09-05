@@ -81,6 +81,7 @@ set(TEXC_SOURCES
     src/codecs/astc.cpp
     src/codecs/pvrtc.cpp
     src/codecs/atc.cpp
+    src/codecs/wii.cpp
     src/unswizzle/unswizzle.cpp
     src/util/image_utils.cpp
 )

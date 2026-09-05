@@ -291,6 +291,47 @@ try {
         "PS Vita 24bpp reswizzle->unswizzle identity");
 }
 
+/* ---- GameCube/Wii GX formats ---- */
+{
+  const { PaletteFormat, TexResult } = api;
+  // RGB5A3 555 mode through the named export: 0xFC00 -> opaque red
+  {
+    const t = new Uint8Array(32); t[0] = 0xFC; t[1] = 0x00;
+    const src = mod._malloc(32), dst = mod._malloc(64);
+    mod.HEAPU8.set(t, src);
+    const rc = mod._texc_decode_wii_rgb5a3(src, 32, 4, 4, dst, 64);
+    const px = mod.HEAPU8.subarray(dst, dst + 4);
+    check(rc === 0 && px[0] === 255 && px[1] === 0 && px[3] === 255,
+          "_texc_decode_wii_rgb5a3 555-mode red");
+    mod._free(src); mod._free(dst);
+  }
+  // encode/decode roundtrips via generated helpers
+  const w = 32, h = 32, img = gradient(w, h);
+  for (const [name, bar] of [["WII_RGB565", 30], ["WII_CMPR", 26],
+                             ["WII_RGBA8", 60]]) {
+    const enc = await tex.encoder[`encode${name}`](img, w, h);
+    const dec = await tex.decoder[`decode${name}`](enc, w, h);
+    const p = psnr(img, dec, 4) ;                   // R channel only
+    check(p > bar, `${name} helper roundtrip PSNR ${p.toFixed(1)} dB > ${bar}`);
+  }
+  // paletted: C4 with an IA8 palette; plain decode must throw NEEDS_PALETTE
+  const t = new Uint8Array(32); t[0] = 0x10;         // (0,0)=1, (0,1)=0
+  const pal = new Uint8Array(32);
+  pal[0] = 0xFF; pal[1] = 0x00; pal[2] = 0x80; pal[3] = 0xC0;
+  check(await tex.decoder.paletteSize(TexFormat.WII_C4) === 32, "paletteSize(C4)");
+  const dec = await tex.decoder.decodePaletted(TexFormat.WII_C4, t, 8, 8, pal,
+                                               PaletteFormat.IA8);
+  check(dec[0] === 0xC0 && dec[3] === 0x80 && dec[4] === 0 && dec[7] === 0xFF,
+        "decodePaletted C4/IA8 known answer");
+  try {
+    await tex.decoder.decode(TexFormat.WII_C4, t, 8, 8);
+    check(false, "plain decode of C4 should throw");
+  } catch (e) {
+    check(e.code === TexResult.NEEDS_PALETTE,
+          `plain decode of C4 throws NEEDS_PALETTE (code ${e.code})`);
+  }
+}
+
 /* ---- reswizzle raw exports ---- */
 check(typeof mod._texc_reswizzle === "function" &&
       typeof mod._texc_reswizzle_ps4 === "function" &&

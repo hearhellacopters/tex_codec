@@ -76,13 +76,25 @@ const format_info k_formats[TEXC_FORMAT_COUNT] = {
      * ETC1 blocks, so sizes round up to whole tiles like the hardware. */
     /* PICA_ETC1_RGB8       */ { "PICA_ETC1_RGB8",          8, 8, 32 },
     /* PICA_ETC1_RGB8A4     */ { "PICA_ETC1_RGB8A4",        8, 8, 64 },
+    /* GameCube/Wii GX tiles: 32 bytes each except RGBA8's 64. */
+    /* WII_I4               */ { "WII_I4",                  8, 8, 32 },
+    /* WII_I8               */ { "WII_I8",                  8, 4, 32 },
+    /* WII_IA4              */ { "WII_IA4",                 8, 4, 32 },
+    /* WII_IA8              */ { "WII_IA8",                 4, 4, 32 },
+    /* WII_RGB565           */ { "WII_RGB565",              4, 4, 32 },
+    /* WII_RGB5A3           */ { "WII_RGB5A3",              4, 4, 32 },
+    /* WII_RGBA8            */ { "WII_RGBA8",               4, 4, 64 },
+    /* WII_CMPR             */ { "WII_CMPR",                8, 8, 32 },
+    /* WII_C4               */ { "WII_C4",                  8, 8, 32 },
+    /* WII_C8               */ { "WII_C8",                  8, 4, 32 },
+    /* WII_C14X2            */ { "WII_C14X2",               4, 4, 32 },
 };
 
 inline bool valid_format(texc_format f) {
     return f > TEXC_FORMAT_INVALID && f < TEXC_FORMAT_COUNT;
 }
 
-enum class family { raw, bcn, etc, astc, pvrtc, atc, atlas };
+enum class family { raw, bcn, etc, astc, pvrtc, atc, atlas, wii };
 
 family format_family(texc_format f) {
     if (f == TEXC_FORMAT_RGBA8) return family::raw;
@@ -95,6 +107,8 @@ family format_family(texc_format f) {
     if (f >= TEXC_FORMAT_ASTC_4x4 && f <= TEXC_FORMAT_ASTC_12x12) return family::astc;
     if (f >= TEXC_FORMAT_ETC1_RGB_A_ATLAS && f <= TEXC_FORMAT_ETC2_RGB_A_ATLAS)
         return family::atlas;
+    if (f >= TEXC_FORMAT_WII_I4 && f <= TEXC_FORMAT_WII_C14X2)
+        return family::wii;
     return family::atc;
 }
 
@@ -195,6 +209,7 @@ const char *texc_result_str(int result) {
     case TEXC_ERR_BAD_DATA:         return "malformed compressed data";
     case TEXC_ERR_OUT_OF_MEMORY:    return "out of memory";
     case TEXC_ERR_BAD_DIMENSIONS:   return "unsupported image dimensions";
+    case TEXC_ERR_NEEDS_PALETTE:    return "paletted format: use texc_decode_paletted";
     default:                        return "unknown error";
     }
 }
@@ -243,7 +258,37 @@ int texc_can_decode(texc_format format) {
 }
 
 int texc_can_encode(texc_format format) {
-    return valid_format(format) ? 1 : 0;
+    if (!valid_format(format)) return 0;
+    return texc::wii_is_paletted(format) ? 0 : 1;   /* no palette generation */
+}
+
+int texc_is_paletted(texc_format format) {
+    return valid_format(format) && texc::wii_is_paletted(format) ? 1 : 0;
+}
+
+size_t texc_palette_size(texc_format format) {
+    return valid_format(format) ? texc::wii_palette_size(format) : 0;
+}
+
+int texc_decode_paletted(texc_format format,
+                         const uint8_t *src, size_t src_size,
+                         uint32_t width, uint32_t height,
+                         const uint8_t *palette, size_t palette_size,
+                         texc_palette_format palette_format,
+                         uint8_t *dst, size_t dst_size) {
+    if (!valid_format(format) || !src || !dst || !palette || !width || !height)
+        return TEXC_ERR_INVALID_ARG;
+    if (!texc::wii_is_paletted(format)) return TEXC_ERR_INVALID_ARG;
+    if (palette_format < TEXC_PALETTE_IA8 || palette_format > TEXC_PALETTE_RGB5A3)
+        return TEXC_ERR_INVALID_ARG;
+    if (src_size < texc_encoded_size(format, width, height))
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+    size_t need = texc_decoded_size(width, height);
+    if (need == 0) return TEXC_ERR_INVALID_ARG;
+    if (dst_size < need) return TEXC_ERR_BUFFER_TOO_SMALL;
+    return texc::wii_decode_paletted(format, src, src_size, width, height,
+                                     palette, palette_size, palette_format,
+                                     dst);
 }
 
 /* -------------------------------------------------------- decode / encode */
@@ -273,6 +318,8 @@ int texc_decode(texc_format format, const uint8_t *src, size_t src_size,
         return texc::pvrtc_decode(format, src, src_size, width, height, dst);
     case family::atc:
         return texc::atc_decode(format, src, src_size, width, height, dst);
+    case family::wii:
+        return texc::wii_decode(format, src, src_size, width, height, dst);
     case family::atlas: {
         /* Decode the double-height base image, keep the top half as RGB and
          * fold the bottom half's R channel into A (KTGL bHasAlphaAtlas). */
@@ -378,6 +425,8 @@ int texc_encode_ex(texc_format format, const uint8_t *src, size_t src_size,
         return texc::pvrtc_encode(format, src, width, height, dst, opts);
     case family::atc:
         return texc::atc_encode(format, src, width, height, dst, opts);
+    case family::wii:
+        return texc::wii_encode(format, src, width, height, dst, opts);
     case family::atlas: {
         /* Build the double-height base image: RGB on top, the alpha channel
          * replicated as grayscale below, then encode as the base codec. */

@@ -49,7 +49,7 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 4
+#define TEXC_VERSION_MINOR 5
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
@@ -164,8 +164,47 @@ typedef enum texc_format {
     TEXC_FORMAT_PICA_ETC1_RGB8,   /* 3DS GPU_ETC1,   4bpp, 32B/8x8 tile    */
     TEXC_FORMAT_PICA_ETC1_RGB8A4, /* 3DS GPU_ETC1A4, 8bpp, 64B/8x8 tile    */
 
+    /* Nintendo GameCube / Wii GX texture formats ("TPL" formats), ported
+     * from Kerilk/noesis_bayonetta_pc tpl.h - the decoder Project-G1M's
+     * PLATFORM::RVL path uses. The image is a row-major grid of tiles (32
+     * bytes each, RGBA8 64), all multi-byte values big-endian. The tile
+     * geometry below is what texc_block_dims reports, so sizes round up to
+     * whole tiles as the hardware stores them.
+     *
+     * Project-G1M's getNWiiFormat() maps G1T pixel-format IDs like so:
+     *   I4 <- 0x2B,0x2F   I8 <- 0x18,0x28-0x2A,0x2C,0x30   IA4 <- 0x2D
+     *   IA8 <- 0x26,0x27,0x2E   RGB565 <- 0x1C   RGB5A3 <- 0x25
+     *   RGBA8 <- 0x0A,0x13,0x22   CMPR <- 0x10   C4 <- 0x31   C8 <- 0x32
+     *   C14X2 <- 0x15,0x33
+     *
+     * C4 / C8 / C14X2 are paletted: texc_decode returns
+     * TEXC_ERR_NEEDS_PALETTE for them - use texc_decode_paletted with the
+     * palette (a G1TL file's entry, for G1T content). Encoding paletted
+     * formats is not supported (no palette generation). Cube maps and
+     * volumes are just consecutive 2D faces / slices; decode each one. */
+    TEXC_FORMAT_WII_I4,           /* GX_TF_I4,     4bpp,  8x8 tile, 32B     */
+    TEXC_FORMAT_WII_I8,           /* GX_TF_I8,     8bpp,  8x4 tile, 32B     */
+    TEXC_FORMAT_WII_IA4,          /* GX_TF_IA4,    8bpp,  8x4 tile, 32B     */
+    TEXC_FORMAT_WII_IA8,          /* GX_TF_IA8,   16bpp,  4x4 tile, 32B     */
+    TEXC_FORMAT_WII_RGB565,       /* GX_TF_RGB565,16bpp,  4x4 tile, 32B     */
+    TEXC_FORMAT_WII_RGB5A3,       /* GX_TF_RGB5A3,16bpp,  4x4 tile, 32B     */
+    TEXC_FORMAT_WII_RGBA8,        /* GX_TF_RGBA8, 32bpp,  4x4 tile, 64B     */
+    TEXC_FORMAT_WII_CMPR,         /* GX_TF_CMPR,   4bpp,  8x8 tile, 32B     */
+    TEXC_FORMAT_WII_C4,           /* GX_TF_CI4,    4bpp,  8x8 tile, paletted*/
+    TEXC_FORMAT_WII_C8,           /* GX_TF_CI8,    8bpp,  8x4 tile, paletted*/
+    TEXC_FORMAT_WII_C14X2,        /* GX_TF_CI14X2,16bpp,  4x4 tile, paletted*/
+
     TEXC_FORMAT_COUNT
 } texc_format;
+
+/* Palette entry layouts for the paletted Wii formats (GX_TL_*). Values match
+ * tplPaletteFormats_e / a G1TL entry's WiiPALETTE_TYPE, so they can be
+ * passed straight through. Entries are big-endian 16-bit. */
+typedef enum texc_palette_format {
+    TEXC_PALETTE_IA8    = 0,
+    TEXC_PALETTE_RGB565 = 1,
+    TEXC_PALETTE_RGB5A3 = 2
+} texc_palette_format;
 
 /* ----------------------------------------------------------- result codes */
 
@@ -176,7 +215,9 @@ typedef enum texc_result {
     TEXC_ERR_UNSUPPORTED      = -3,   /* format/operation not implemented   */
     TEXC_ERR_BAD_DATA         = -4,   /* malformed compressed input         */
     TEXC_ERR_OUT_OF_MEMORY    = -5,
-    TEXC_ERR_BAD_DIMENSIONS   = -6    /* e.g. PVRTC1 non-power-of-two       */
+    TEXC_ERR_BAD_DIMENSIONS   = -6,   /* e.g. PVRTC1 non-power-of-two       */
+    TEXC_ERR_NEEDS_PALETTE    = -7    /* paletted format: use
+                                       * texc_decode_paletted               */
 } texc_result;
 
 /* ------------------------------------------------------------------ query */
@@ -214,9 +255,28 @@ TEXC_API size_t texc_encoded_size(texc_format format,
 /* Decoded RGBA8 size in bytes: width * height * 4 (0 on overflow). */
 TEXC_API size_t texc_decoded_size(uint32_t width, uint32_t height);
 
-/* 1 if decode / encode is implemented for the format, else 0. */
+/* 1 if decode / encode is implemented for the format, else 0. Paletted
+ * formats report can_decode = 1 (via texc_decode_paletted) and
+ * can_encode = 0. */
 TEXC_API int texc_can_decode(texc_format format);
 TEXC_API int texc_can_encode(texc_format format);
+
+/* 1 if the format needs a palette to decode (Wii C4 / C8 / C14X2). */
+TEXC_API int texc_is_paletted(texc_format format);
+
+/* Bytes of palette a paletted format needs (C4 32, C8 512, C14X2 32768);
+ * 0 for non-paletted formats. */
+TEXC_API size_t texc_palette_size(texc_format format);
+
+/* Decode a paletted format to 8-bit RGBA. palette holds at least
+ * texc_palette_size(format) bytes of big-endian 16-bit entries laid out per
+ * palette_format. Other arguments as texc_decode. */
+TEXC_API int texc_decode_paletted(texc_format format,
+                                  const uint8_t *src, size_t src_size,
+                                  uint32_t width, uint32_t height,
+                                  const uint8_t *palette, size_t palette_size,
+                                  texc_palette_format palette_format,
+                                  uint8_t *dst, size_t dst_size);
 
 /* --------------------------------------------------------- decode / encode */
 

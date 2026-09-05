@@ -309,7 +309,19 @@ struct options {
     char flip_dir = 'y';
     bool flip_y_after = false;      /* decode: flip result vertically */
     bool f32 = false;
+    std::string palette;            /* paletted Wii formats: palette file  */
+    texc_palette_format palette_format = TEXC_PALETTE_IA8;
+    bool palette_format_set = false;
 };
+
+static texc_palette_format parse_palette_format(const std::string &name) {
+    std::string want = lower(name);
+    if (want == "ia8")    return TEXC_PALETTE_IA8;
+    if (want == "rgb565") return TEXC_PALETTE_RGB565;
+    if (want == "rgb5a3") return TEXC_PALETTE_RGB5A3;
+    die("unknown palette format '%s' (ia8, rgb565 or rgb5a3)", name.c_str());
+    return TEXC_PALETTE_IA8;
+}
 
 static void usage(const char *cmd) {
     std::string c = cmd ? lower(cmd) : "";
@@ -326,6 +338,10 @@ static void usage(const char *cmd) {
 "    --arg <N|auto>       mode-specific arg; 'auto' = 0xFFFFFFFF (Switch)\n"
 "    --flip-y             flip the decoded image vertically\n"
 "    --f32                decode to float RGBA (.raw output only)\n"
+"    --palette <file>     palette for WII_C4/C8/C14X2 (big-endian 16-bit\n"
+"                         entries, e.g. a G1TL entry); --offset applies to\n"
+"                         the texture only\n"
+"    --palette-format <f> ia8 | rgb565 | rgb5a3 (default ia8)\n"
 "    -o <out>             .png / .tga = image, anything else = raw RGBA\n");
     else if (c == "encode") printf(
 "texc encode -i <in.tga|in.raw> -f <format> [-w <W> -h <H>] -o <out>\n"
@@ -431,6 +447,11 @@ static options parse_args(int argc, char **argv) {
         }
         else if (a == "--flip-y") o.flip_y_after = true;
         else if (a == "--f32")    o.f32 = true;
+        else if (a == "--palette") o.palette = need(i);
+        else if (a == "--palette-format") {
+            o.palette_format = parse_palette_format(need(i));
+            o.palette_format_set = true;
+        }
         else if (a == "--help")   { usage(o.command.c_str()); exit(0); }
         else die("unknown option '%s' (see `texc help %s`)", argv[i],
                  o.command.c_str());
@@ -468,12 +489,31 @@ static void cmd_decode(const options &o) {
 
     size_t out_size = texc_decoded_size(o.width, o.height);
     std::vector<uint8_t> rgba(out_size);
-    int rc = (o.mode_set && o.mode != TEXC_SWIZZLE_NONE)
-        ? texc_decode_swizzled(o.mode, o.format, o.width, o.height,
-                               src.data(), src.size(), rgba.data(), out_size,
-                               o.arg)
-        : texc_decode(o.format, src.data(), src.size(), o.width, o.height,
-                      rgba.data(), out_size);
+    int rc;
+    if (texc_is_paletted(o.format)) {
+        if (o.palette.empty())
+            die("%s is paletted: pass --palette <file> "
+                "[--palette-format ia8|rgb565|rgb5a3]",
+                texc_format_name(o.format));
+        if (o.mode_set && o.mode != TEXC_SWIZZLE_NONE)
+            die("--swizzle cannot be combined with a paletted format "
+                "(unswizzle first)");
+        std::vector<uint8_t> pal = read_file(o.palette, 0, 0);
+        size_t need = texc_palette_size(o.format);
+        if (pal.size() < need)
+            die("palette '%s' is %zu bytes, %s needs %zu", o.palette.c_str(),
+                pal.size(), texc_format_name(o.format), need);
+        rc = texc_decode_paletted(o.format, src.data(), src.size(),
+                                  o.width, o.height, pal.data(), pal.size(),
+                                  o.palette_format, rgba.data(), out_size);
+    } else {
+        rc = (o.mode_set && o.mode != TEXC_SWIZZLE_NONE)
+            ? texc_decode_swizzled(o.mode, o.format, o.width, o.height,
+                                   src.data(), src.size(), rgba.data(),
+                                   out_size, o.arg)
+            : texc_decode(o.format, src.data(), src.size(), o.width,
+                          o.height, rgba.data(), out_size);
+    }
     if (rc != TEXC_OK) die_rc("decode", rc);
 
     if (o.flip_y_after)

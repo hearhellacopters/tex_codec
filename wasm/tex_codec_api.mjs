@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.4.0";
+export const VERSION = "1.5.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -72,6 +72,12 @@ export const TexFormat = Object.freeze({
    *  byte-reversed; RGB8A4 prefixes each block with 8 bytes of 4-bit
    *  alpha. Sizes round up to whole tiles. */
   PICA_ETC1_RGB8: 46, PICA_ETC1_RGB8A4: 47,
+  /** GameCube/Wii GX ("TPL") formats: row-major tiles, big-endian.
+   *  C4/C8/C14X2 are paletted - decode via {@link TexDecoder#decodePaletted}
+   *  (plain decode throws TexResult.NEEDS_PALETTE). */
+  WII_I4: 48, WII_I8: 49, WII_IA4: 50, WII_IA8: 51, WII_RGB565: 52,
+  WII_RGB5A3: 53, WII_RGBA8: 54, WII_CMPR: 55,
+  WII_C4: 56, WII_C8: 57, WII_C14X2: 58,
 });
 
 /**
@@ -103,6 +109,16 @@ export const SwizzleMode = Object.freeze({
 /** `arg` value that makes SWITCH auto-select the GOB block height from the
  *  mip height, like the hardware. */
 export const SwitchBlockHeightAuto = 0xFFFFFFFF;
+
+/**
+ * Palette entry layouts for the paletted Wii formats (GX_TL_*). Values
+ * match `texc_palette_format` and a G1TL entry's WiiPALETTE_TYPE, so they
+ * pass straight through. Entries are big-endian 16-bit.
+ * @readonly @enum {number}
+ */
+export const PaletteFormat = Object.freeze({
+  IA8: 0, RGB565: 1, RGB5A3: 2,
+});
 
 /**
  * Raw pixel layouts for {@link TexImage#convertProfile} (ported from
@@ -143,6 +159,8 @@ export const TexResult = Object.freeze({
   BAD_DATA: -4,
   OUT_OF_MEMORY: -5,
   BAD_DIMENSIONS: -6,
+  /** Paletted format: use {@link TexDecoder#decodePaletted}. */
+  NEEDS_PALETTE: -7,
 });
 
 /* ------------------------------------------------------------------ error */
@@ -288,6 +306,43 @@ export class TexDecoder {
       mod._texc_free(out);
       return rgba;
     });
+  }
+
+  /**
+   * Bytes of palette a paletted format needs (WII_C4 32, WII_C8 512,
+   * WII_C14X2 32768); 0 for non-paletted formats.
+   * @param {number} format a {@link TexFormat} value
+   * @returns {Promise<number>}
+   */
+  async paletteSize(format) {
+    return (await this._owner._mod())._texc_palette_size(format);
+  }
+
+  /**
+   * Decode a paletted texture (WII_C4 / WII_C8 / WII_C14X2) to RGBA8.
+   * For G1T content the palette is a G1TL file entry; pass its
+   * WiiPALETTE_TYPE as `paletteFormat` unchanged.
+   * @param {number} format a paletted {@link TexFormat} value
+   * @param {Uint8Array} data tiled index data
+   * @param {number} width @param {number} height
+   * @param {Uint8Array} palette at least `paletteSize(format)` bytes of
+   *        big-endian 16-bit entries
+   * @param {number} paletteFormat a {@link PaletteFormat} value
+   * @returns {Promise<Uint8Array>} `width*height*4` RGBA bytes
+   */
+  async decodePaletted(format, data, width, height, palette, paletteFormat) {
+    const mod = await this._owner._mod();
+    return withInput(mod, data, (src) =>
+      withInput(mod, palette, (pal) => {
+        const out = mod._texc_decode_paletted_alloc(
+            format, src, data.byteLength, width, height,
+            pal, palette.byteLength, paletteFormat);
+        if (!out) throwResult(mod, `decodePaletted(${formatName(format)})`,
+                              mod._texc_last_error());
+        const rgba = mod.HEAPU8.slice(out, out + width * height * 4);
+        mod._texc_free(out);
+        return rgba;
+      }));
   }
 }
 

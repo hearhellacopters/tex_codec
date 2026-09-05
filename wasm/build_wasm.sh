@@ -23,6 +23,7 @@ SOURCES=(
     ../src/codecs/astc.cpp
     ../src/codecs/pvrtc.cpp
     ../src/codecs/atc.cpp
+    ../src/codecs/wii.cpp
     ../src/unswizzle/*.cpp
     ../src/util/*.cpp
     exports.cpp

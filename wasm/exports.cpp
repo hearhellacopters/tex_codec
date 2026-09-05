@@ -95,6 +95,26 @@ TEXC_API uint8_t *texc_decode_swizzled_alloc(texc_swizzle_mode mode,
     return dst;
 }
 
+/* Decode a paletted (Wii C4/C8/C14X2) texture to a freshly allocated RGBA8
+ * buffer. palette: texc_palette_size(format) bytes of big-endian entries. */
+TEXC_API uint8_t *texc_decode_paletted_alloc(texc_format format,
+                                             const uint8_t *src,
+                                             size_t src_size,
+                                             uint32_t width, uint32_t height,
+                                             const uint8_t *palette,
+                                             size_t palette_size,
+                                             texc_palette_format pal_fmt) {
+    size_t out_size = texc_decoded_size(width, height);
+    if (out_size == 0) { g_last_error = TEXC_ERR_INVALID_ARG; return NULL; }
+    uint8_t *dst = (uint8_t *)malloc(out_size);
+    if (!dst) { g_last_error = TEXC_ERR_OUT_OF_MEMORY; return NULL; }
+    g_last_error = texc_decode_paletted(format, src, src_size, width, height,
+                                        palette, palette_size, pal_fmt,
+                                        dst, out_size);
+    if (g_last_error != TEXC_OK) { free(dst); return NULL; }
+    return dst;
+}
+
 /* Encode to a freshly allocated buffer; *out_size receives the byte count.
  * alpha_threshold: 128 = default behaviour. */
 TEXC_API uint8_t *texc_encode_alloc(texc_format format,
@@ -208,6 +228,17 @@ TEXC_DEF_FORMAT(pvrtc1_4bpp_rgb_a_atlas, TEXC_FORMAT_PVRTC1_4BPP_RGB_A_ATLAS)
 TEXC_DEF_FORMAT(etc2_rgb_a_atlas,      TEXC_FORMAT_ETC2_RGB_A_ATLAS)
 TEXC_DEF_FORMAT(pica_etc1_rgb8,        TEXC_FORMAT_PICA_ETC1_RGB8)
 TEXC_DEF_FORMAT(pica_etc1_rgb8a4,      TEXC_FORMAT_PICA_ETC1_RGB8A4)
+TEXC_DEF_FORMAT(wii_i4,                TEXC_FORMAT_WII_I4)
+TEXC_DEF_FORMAT(wii_i8,                TEXC_FORMAT_WII_I8)
+TEXC_DEF_FORMAT(wii_ia4,               TEXC_FORMAT_WII_IA4)
+TEXC_DEF_FORMAT(wii_ia8,               TEXC_FORMAT_WII_IA8)
+TEXC_DEF_FORMAT(wii_rgb565,            TEXC_FORMAT_WII_RGB565)
+TEXC_DEF_FORMAT(wii_rgb5a3,            TEXC_FORMAT_WII_RGB5A3)
+TEXC_DEF_FORMAT(wii_rgba8,             TEXC_FORMAT_WII_RGBA8)
+TEXC_DEF_FORMAT(wii_cmpr,              TEXC_FORMAT_WII_CMPR)
+TEXC_DEF_FORMAT(wii_c4,                TEXC_FORMAT_WII_C4)
+TEXC_DEF_FORMAT(wii_c8,                TEXC_FORMAT_WII_C8)
+TEXC_DEF_FORMAT(wii_c14x2,             TEXC_FORMAT_WII_C14X2)
 
 #undef TEXC_DEF_FORMAT
 

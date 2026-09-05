@@ -32,6 +32,11 @@ export declare const TexFormat: Readonly<{
   /** PICA200 (3DS) ETC1: 8x8 tiles of four byte-reversed 4x4 ETC1
    *  blocks; RGB8A4 prefixes each with 8 bytes of 4-bit alpha. */
   PICA_ETC1_RGB8: 46; PICA_ETC1_RGB8A4: 47;
+  /** GameCube/Wii GX ("TPL") formats; C4/C8/C14X2 are paletted - decode
+   *  them with TexDecoder#decodePaletted. */
+  WII_I4: 48; WII_I8: 49; WII_IA4: 50; WII_IA8: 51; WII_RGB565: 52;
+  WII_RGB5A3: 53; WII_RGBA8: 54; WII_CMPR: 55;
+  WII_C4: 56; WII_C8: 57; WII_C14X2: 58;
 }>;
 export type TexFormatValue = (typeof TexFormat)[keyof typeof TexFormat];
 
@@ -44,6 +49,14 @@ export type SwizzleModeValue = (typeof SwizzleMode)[keyof typeof SwizzleMode];
 
 /** `arg` value that makes SWITCH auto-select the GOB block height. */
 export declare const SwitchBlockHeightAuto: 0xffffffff;
+
+/** Palette entry layouts for paletted Wii formats; values match
+ *  `texc_palette_format` and a G1TL entry's WiiPALETTE_TYPE. */
+export declare const PaletteFormat: Readonly<{
+  IA8: 0; RGB565: 1; RGB5A3: 2;
+}>;
+export type PaletteFormatValue =
+    (typeof PaletteFormat)[keyof typeof PaletteFormat];
 
 /** Raw pixel layouts (tex-decoder COLOR_PROFILE); values match
  *  `texc_pixel_profile`. Suffix: none = unsigned, I = signed,
@@ -73,6 +86,8 @@ export type PixelProfileValue =
 export declare const TexResult: Readonly<{
   OK: 0; INVALID_ARG: -1; BUFFER_TOO_SMALL: -2; UNSUPPORTED: -3;
   BAD_DATA: -4; OUT_OF_MEMORY: -5; BAD_DIMENSIONS: -6;
+  /** Paletted format: use TexDecoder#decodePaletted. */
+  NEEDS_PALETTE: -7;
 }>;
 export type TexResultValue = (typeof TexResult)[keyof typeof TexResult];
 
@@ -152,6 +167,17 @@ export interface TexCodecModule {
   _texc_decode_swizzled(mode: number, format: number, width: number,
                         height: number, src: Ptr, srcSize: number, dst: Ptr,
                         dstSize: number, arg: number): number;
+  /* --------------------------------------------- paletted (Wii) ------- */
+  _texc_is_paletted(format: number): number;
+  _texc_palette_size(format: number): number;
+  _texc_decode_paletted(format: number, src: Ptr, srcSize: number,
+                        width: number, height: number, palette: Ptr,
+                        paletteSize: number, paletteFormat: number,
+                        dst: Ptr, dstSize: number): number;
+  /** Returns a malloc'd RGBA8 buffer or 0; see _texc_last_error. */
+  _texc_decode_paletted_alloc(format: number, src: Ptr, srcSize: number,
+                              width: number, height: number, palette: Ptr,
+                              paletteSize: number, paletteFormat: number): Ptr;
   /** RESWIZZLE (linear -> tiled): alias of _texc_swizzle with an
    *  unambiguous name. */
   _texc_reswizzle(mode: number, format: number, width: number, height: number,
@@ -310,6 +336,12 @@ export declare class TexDecoder {
                  format: TexFormatValue | number, data: Uint8Array,
                  width: number, height: number,
                  arg?: number): Promise<Uint8Array>;
+  /** Palette bytes a paletted format needs; 0 if not paletted. */
+  paletteSize(format: TexFormatValue | number): Promise<number>;
+  /** Decode WII_C4 / WII_C8 / WII_C14X2 with a big-endian 16-bit palette. */
+  decodePaletted(format: TexFormatValue | number, data: Uint8Array,
+                 width: number, height: number, palette: Uint8Array,
+                 paletteFormat: PaletteFormatValue | number): Promise<Uint8Array>;
 }
 export interface TexDecoder
     extends PerFormatDecode, PerFormatDecodeF32, PerModeDecodeSwizzled {}
