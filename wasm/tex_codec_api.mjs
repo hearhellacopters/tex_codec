@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.5.0";
+export const VERSION = "1.6.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -88,6 +88,9 @@ export const TexFormat = Object.freeze({
 export const SwizzleMode = Object.freeze({
   NONE: 0,
   PS4: 1,
+  /** Prospero (AMD GFX10) block tiling; `arg` = a {@link PS5TileMode}
+   *  (0 = STANDARD_4KB, what G1T uses). Whole mip chains: see
+   *  {@link TexSwizzler#surfaceLayout} / {@link TexSwizzler#unswizzleMip}. */
   PS5: 2,
   /** Tegra X1 block-linear GOBs; `arg` = log2 block height (0-5) or
    *  {@link SwitchBlockHeightAuto}. */
@@ -104,6 +107,24 @@ export const SwizzleMode = Object.freeze({
   WIIU: 8,
   /** Data of 64KB or less is stored linearly (pass-through). */
   DX12_64KB: 9,
+});
+
+/**
+ * PS5 tile modes, passed as `arg` with {@link SwizzleMode.PS5}. Values
+ * match Sony's `sce::AgcGpuAddress::TileMode` (`texc_ps5_tile_mode`).
+ * @readonly @enum {number}
+ */
+export const PS5TileMode = Object.freeze({
+  /** = STANDARD_4KB */
+  DEFAULT: 0,
+  /** 256-byte blocks (kStandard256B) */
+  STANDARD_256B: 1,
+  /** 4 KB blocks (kStandard4KB) - every known G1T PS5 texture */
+  STANDARD_4KB: 5,
+  /** 64 KB blocks (kStandard64KB) */
+  STANDARD_64KB: 9,
+  /** tex_codec <= 1.5 layout (RawTex Cooker port); no mip-chain layout */
+  LEGACY: 0x100,
 });
 
 /** `arg` value that makes SWITCH auto-select the GOB block height from the
@@ -488,6 +509,142 @@ export class TexSwizzler {
     return this.reswizzle(mode, format, data, width, height, arg);
   }
 
+  /**
+   * Describe a whole tiled surface holding a mip chain (and array slices /
+   * cube faces): total size, block geometry and where every mip lives.
+   * Implemented for {@link SwizzleMode.PS5} and {@link SwizzleMode.NONE}.
+   *
+   * PS5: the smallest mips share one "mip tail" block stored FIRST, then
+   * the rest follow in descending order (mip 0 is LAST); slices repeat the
+   * chain. Use this to find a G1T PS5 texture's mip 0 or its buffer size.
+   * @param {number} mode a {@link SwizzleMode} value
+   * @param {number} format a {@link TexFormat} value
+   * @param {number} width mip 0 width in pixels
+   * @param {number} height mip 0 height in pixels
+   * @param {number} mipCount
+   * @param {{sliceCount?: number, arg?: number}} [opts]
+   * @returns {Promise<SurfaceLayout>}
+   */
+  async surfaceLayout(mode, format, width, height, mipCount,
+                      { sliceCount = 1, arg = 0 } = {}) {
+    const mod = await this._owner._mod();
+    const ptr = mod._malloc(k_layoutSize);
+    try {
+      const rc = mod._texc_get_surface_layout(mode, format, width, height,
+                                              mipCount, sliceCount, arg, ptr);
+      if (rc !== 0) throwResult(mod, "surfaceLayout", rc);
+      return readLayout(mod, ptr);
+    } finally {
+      mod._free(ptr);
+    }
+  }
+
+  /**
+   * Recover the PS5 tile mode of a texture from its data size. G1T has no
+   * tile-mode field and Koei Tecmo content mixes STANDARD_4KB (small
+   * textures) and STANDARD_64KB (large ones); the whole-surface size
+   * differs per mode, so the one whose `surfaceLayout(...).totalSize`
+   * equals `dataSize` is the answer. Throws (BAD_DATA) if none fits.
+   * @param {number} format a {@link TexFormat} value
+   * @param {number} width @param {number} height @param {number} mipCount
+   * @param {number} dataSize bytes of the whole mip chain x slices
+   * @param {{sliceCount?: number}} [opts]
+   * @returns {Promise<number>} a {@link PS5TileMode} value
+   */
+  async detectPS5TileMode(format, width, height, mipCount, dataSize,
+                          { sliceCount = 1 } = {}) {
+    const mod = await this._owner._mod();
+    const ptr = mod._malloc(4);
+    try {
+      const rc = mod._texc_ps5_detect_tile_mode(format, width, height,
+                                                mipCount, sliceCount,
+                                                BigInt(dataSize), ptr);
+      if (rc !== 0) throwResult(mod, "detectPS5TileMode", rc);
+      return mod.getValue(ptr, "i32") >>> 0;
+    } finally {
+      mod._free(ptr);
+    }
+  }
+
+  /**
+   * The tile mode Koei Tecmo's PS5 pipeline is observed to use when
+   * writing a texture: STANDARD_64KB when mip 0 exceeds 64 KB, otherwise
+   * STANDARD_4KB. A heuristic for the write path; prefer
+   * {@link TexSwizzler#detectPS5TileMode} when reading.
+   * @param {number} format @param {number} width @param {number} height
+   * @returns {Promise<number>} a {@link PS5TileMode} value
+   */
+  async defaultPS5TileMode(format, width, height) {
+    const mod = await this._owner._mod();
+    return mod._texc_ps5_default_tile_mode(format, width, height) >>> 0;
+  }
+
+  /**
+   * Extract one mip (of one slice) from a whole tiled surface into linear
+   * row-major block order. `surface` holds `surfaceLayout(...).totalSize`
+   * bytes. The result is `encodedSize(format, max(1, width >> mip),
+   * max(1, height >> mip))` bytes, ready for the decoder.
+   * @param {number} mode @param {number} format
+   * @param {Uint8Array} surface the whole tiled surface
+   * @param {number} width mip 0 width @param {number} height mip 0 height
+   * @param {number} mipCount @param {number} mip level to extract
+   * @param {{sliceCount?: number, slice?: number, arg?: number}} [opts]
+   * @returns {Promise<Uint8Array>}
+   */
+  async unswizzleMip(mode, format, surface, width, height, mipCount, mip,
+                     { sliceCount = 1, slice = 0, arg = 0 } = {}) {
+    const mod = await this._owner._mod();
+    return withInput(mod, surface, (src) => {
+      const sizePtr = mod._malloc(4);
+      try {
+        const out = mod._texc_unswizzle_mip_alloc(mode, format, src,
+                                                  surface.byteLength, width,
+                                                  height, mipCount, sliceCount,
+                                                  arg, mip, slice, sizePtr);
+        if (!out) throwResult(mod, "unswizzleMip", mod._texc_last_error());
+        const size = mod.getValue(sizePtr, "i32") >>> 0;
+        const bytes = mod.HEAPU8.slice(out, out + size);
+        mod._texc_free(out);
+        return bytes;
+      } finally {
+        mod._free(sizePtr);
+      }
+    });
+  }
+
+  /**
+   * Inverse of {@link TexSwizzler#unswizzleMip}: write linear mip data into
+   * its place inside a whole tiled surface. Returns a NEW surface buffer
+   * (the input is not modified); pass a zero-filled buffer of
+   * `surfaceLayout(...).totalSize` bytes (or the previous result) and call
+   * once per mip and slice to build a complete surface.
+   * @param {number} mode @param {number} format
+   * @param {Uint8Array} surface existing surface (totalSize bytes)
+   * @param {Uint8Array} mipData linear data for the mip
+   * @param {number} width @param {number} height @param {number} mipCount
+   * @param {number} mip
+   * @param {{sliceCount?: number, slice?: number, arg?: number}} [opts]
+   * @returns {Promise<Uint8Array>} updated surface
+   */
+  async reswizzleMip(mode, format, surface, mipData, width, height, mipCount,
+                     mip, { sliceCount = 1, slice = 0, arg = 0 } = {}) {
+    const mod = await this._owner._mod();
+    return withInput(mod, mipData, (src) => {
+      const surf = mod._malloc(surface.byteLength || 1);
+      try {
+        mod.HEAPU8.set(surface, surf);
+        const rc = mod._texc_reswizzle_mip(mode, format, width, height,
+                                           mipCount, sliceCount, arg, mip,
+                                           slice, src, mipData.byteLength,
+                                           surf, surface.byteLength);
+        if (rc !== 0) throwResult(mod, "reswizzleMip", rc);
+        return mod.HEAPU8.slice(surf, surf + surface.byteLength);
+      } finally {
+        mod._free(surf);
+      }
+    });
+  }
+
   /** @private */
   async _convert(mode, format, data, width, height, arg, toLinear) {
     const mod = await this._owner._mod();
@@ -509,6 +666,65 @@ export class TexSwizzler {
       }
     });
   }
+}
+
+/* texc_surface_layout / texc_mip_layout as laid out in memory (fixed-width
+ * fields, natural alignment, identical on wasm32 and 64-bit hosts; the
+ * native test suite static_asserts these sizes). */
+const k_mipLayoutSize = 48;
+const k_layoutSize = 48 + 16 * k_mipLayoutSize;
+
+/**
+ * @typedef {Object} MipLayout
+ * @property {number} width mip width in elements (blocks, or pixels for raw)
+ * @property {number} height
+ * @property {number} paddedWidth block-padded width in elements
+ * @property {number} paddedHeight
+ * @property {number} offset byte offset within one slice
+ * @property {number} size bytes of blocks holding this mip
+ * @property {boolean} inTail packed in the shared mip-tail block
+ * @property {number} tailX element position inside the tail block
+ * @property {number} tailY
+ */
+/**
+ * @typedef {Object} SurfaceLayout
+ * @property {number} mipCount
+ * @property {number} sliceCount
+ * @property {number} firstMipInTail == mipCount when there is no tail
+ * @property {number} blockWidth tiling block in elements
+ * @property {number} blockHeight
+ * @property {number} blockBytes
+ * @property {number} elementBytes
+ * @property {number} sliceSize bytes per slice (all mips)
+ * @property {number} totalSize sliceSize * sliceCount
+ * @property {MipLayout[]} mips one entry per mip
+ */
+
+function readU32(mod, ptr) { return mod.getValue(ptr, "i32") >>> 0; }
+function readU64(mod, ptr) {
+  return readU32(mod, ptr + 4) * 4294967296 + readU32(mod, ptr);
+}
+
+/** @returns {SurfaceLayout} */
+function readLayout(mod, p) {
+  const u32 = (o) => readU32(mod, p + o);
+  const mipCount = u32(0);
+  const mips = [];
+  for (let i = 0; i < mipCount; i++) {
+    const m = p + 48 + i * k_mipLayoutSize;
+    const mu = (o) => readU32(mod, m + o);
+    mips.push({
+      width: mu(0), height: mu(4), paddedWidth: mu(8), paddedHeight: mu(12),
+      offset: readU64(mod, m + 16), size: readU64(mod, m + 24),
+      inTail: mu(32) !== 0, tailX: mu(36), tailY: mu(40),
+    });
+  }
+  return {
+    mipCount, sliceCount: u32(4), firstMipInTail: u32(8),
+    blockWidth: u32(12), blockHeight: u32(16), blockBytes: u32(20),
+    elementBytes: u32(24), sliceSize: readU64(mod, p + 32),
+    totalSize: readU64(mod, p + 40), mips,
+  };
 }
 
 /**

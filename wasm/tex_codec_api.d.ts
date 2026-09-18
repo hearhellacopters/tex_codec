@@ -47,6 +47,42 @@ export declare const SwizzleMode: Readonly<{
 }>;
 export type SwizzleModeValue = (typeof SwizzleMode)[keyof typeof SwizzleMode];
 
+/** PS5 tile modes (the `arg` for SwizzleMode.PS5); values match Sony's
+ *  `sce::AgcGpuAddress::TileMode` / `texc_ps5_tile_mode`. DEFAULT is
+ *  STANDARD_4KB, what every known G1T PS5 texture uses. LEGACY is the
+ *  tex_codec <= 1.5 layout (no mip-chain layout). */
+export declare const PS5TileMode: Readonly<{
+  DEFAULT: 0; STANDARD_256B: 1; STANDARD_4KB: 5; STANDARD_64KB: 9;
+  LEGACY: 0x100;
+}>;
+export type PS5TileModeValue = (typeof PS5TileMode)[keyof typeof PS5TileMode];
+
+/** Where one mip lives inside a whole tiled surface. Sizes are in
+ *  ELEMENTS (compressed blocks, or pixels for raw formats). */
+export interface MipLayout {
+  width: number; height: number;
+  paddedWidth: number; paddedHeight: number;
+  /** byte offset within one slice (for a tail mip: of the tail block) */
+  offset: number;
+  /** bytes of blocks holding this mip */
+  size: number;
+  inTail: boolean;
+  tailX: number; tailY: number;
+}
+/** A whole tiled surface: mip chain x slices. PS5: the mip tail block is
+ *  stored first, then mips in descending order (mip 0 last). */
+export interface SurfaceLayout {
+  mipCount: number; sliceCount: number;
+  /** == mipCount when there is no tail */
+  firstMipInTail: number;
+  blockWidth: number; blockHeight: number; blockBytes: number;
+  elementBytes: number;
+  sliceSize: number; totalSize: number;
+  mips: MipLayout[];
+}
+export interface SurfaceOptions { sliceCount?: number; arg?: number }
+export interface MipOptions extends SurfaceOptions { slice?: number }
+
 /** `arg` value that makes SWITCH auto-select the GOB block height. */
 export declare const SwitchBlockHeightAuto: 0xffffffff;
 
@@ -380,6 +416,31 @@ export declare class TexSwizzler {
   swizzle(mode: SwizzleModeValue | number, format: TexFormatValue | number,
           data: Uint8Array, width: number, height: number,
           arg?: number): Promise<Uint8Array>;
+  /** Layout of a whole tiled surface (mip chain x slices). PS5 and NONE. */
+  surfaceLayout(mode: SwizzleModeValue | number,
+                format: TexFormatValue | number, width: number,
+                height: number, mipCount: number,
+                opts?: SurfaceOptions): Promise<SurfaceLayout>;
+  /** PS5 tile mode recovered from the texture's data size (G1T has no
+   *  tile-mode field; small textures use 4KB blocks, large ones 64KB). */
+  detectPS5TileMode(format: TexFormatValue | number, width: number,
+                    height: number, mipCount: number, dataSize: number,
+                    opts?: { sliceCount?: number }): Promise<PS5TileModeValue>;
+  /** Observed write-path heuristic: 64KB blocks when mip 0 > 64 KB. */
+  defaultPS5TileMode(format: TexFormatValue | number, width: number,
+                     height: number): Promise<PS5TileModeValue>;
+  /** One mip of one slice out of a whole tiled surface -> linear. */
+  unswizzleMip(mode: SwizzleModeValue | number,
+               format: TexFormatValue | number, surface: Uint8Array,
+               width: number, height: number, mipCount: number, mip: number,
+               opts?: MipOptions): Promise<Uint8Array>;
+  /** Linear mip data -> its place in a whole tiled surface; returns the
+   *  updated surface (a new buffer). */
+  reswizzleMip(mode: SwizzleModeValue | number,
+               format: TexFormatValue | number, surface: Uint8Array,
+               mipData: Uint8Array, width: number, height: number,
+               mipCount: number, mip: number,
+               opts?: MipOptions): Promise<Uint8Array>;
 }
 export interface TexSwizzler
     extends PerModeUnswizzle, PerModeReswizzle, PerModeSwizzledSize {}

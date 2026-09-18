@@ -36,6 +36,23 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
                     uint8_t *dst, size_t dst_size,
                     uint32_t arg, bool dir_to_linear);
 
+/* Whole-surface (mip chain x slices) layout; see texc_get_surface_layout.
+ * TEXC_ERR_UNSUPPORTED for modes without a chain layout. */
+int surface_layout(texc_swizzle_mode mode, texc_format fmt,
+                   uint32_t width, uint32_t height,
+                   uint32_t mips, uint32_t slices, uint32_t arg,
+                   texc_surface_layout *out);
+
+/* One mip of one slice between the whole tiled surface and linear data.
+ * dir_to_linear == true : src = surface, dst = linear mip
+ * dir_to_linear == false: src = linear mip, dst = surface (in place)    */
+int convert_mip(texc_swizzle_mode mode, texc_format fmt,
+                uint32_t width, uint32_t height,
+                uint32_t mips, uint32_t slices, uint32_t arg,
+                uint32_t mip, uint32_t slice,
+                const uint8_t *src, size_t src_size,
+                uint8_t *dst, size_t dst_size, bool dir_to_linear);
+
 } /* namespace texc */
 
 #endif /* TEXC_UNSWIZZLE_H */

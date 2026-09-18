@@ -9,7 +9,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(process.argv[2] ?? join(here, "..", "dist"));
 const api = await import(pathToFileURL(join(dist, "tex_codec_api.mjs")).href);
 const { TexCodec, TexFormat, SwizzleMode, SwitchBlockHeightAuto,
-        PixelProfile, TexCodecError, VERSION } = api;
+        PixelProfile, PS5TileMode, TexCodecError, VERSION } = api;
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -330,6 +330,91 @@ try {
     check(e.code === TexResult.NEEDS_PALETTE,
           `plain decode of C4 throws NEEDS_PALETTE (code ${e.code})`);
   }
+}
+
+/* ---- PS5 whole-surface (mip chain) layout ---- */
+{
+  check(PS5TileMode.STANDARD_4KB === 5 && PS5TileMode.LEGACY === 0x100,
+        "PS5TileMode enum values");
+  // 256x256 BC7, 7 mips: 64K + 16K + 4K + one 4K tail block (SDK: 90112),
+  // mip 0 last, mips 3.. in the tail.
+  const lay = await tex.swizzler.surfaceLayout(SwizzleMode.PS5, TexFormat.BC7,
+                                               256, 256, 7);
+  check(lay.totalSize === 90112 && lay.sliceSize === 90112 &&
+        lay.firstMipInTail === 3 && lay.blockWidth === 16 &&
+        lay.blockHeight === 16 && lay.blockBytes === 4096 &&
+        lay.elementBytes === 16 && lay.mips.length === 7,
+        `PS5 256x256 BC7 layout (${lay.totalSize} bytes, tail from mip ${lay.firstMipInTail})`);
+  check(lay.mips[0].offset === 24576 && lay.mips[0].size === 65536 &&
+        lay.mips[2].offset === 4096 && lay.mips[3].inTail === true &&
+        lay.mips[3].tailX === 8 && lay.mips[3].tailY === 0 &&
+        lay.mips[6].tailX === 0 && lay.mips[6].tailY === 8,
+        "PS5 mip offsets and tail coordinates match the SDK");
+  // 64KB mode and slices
+  const lay64 = await tex.swizzler.surfaceLayout(SwizzleMode.PS5,
+      TexFormat.BC7, 256, 256, 7, { arg: PS5TileMode.STANDARD_64KB,
+                                    sliceCount: 6 });
+  check(lay64.sliceSize === 131072 && lay64.totalSize === 6 * 131072,
+        "PS5 STANDARD_64KB cube map layout");
+  // unswizzleMip / reswizzleMip roundtrip through a random surface
+  const surf = new Uint8Array(lay.totalSize);
+  for (let i = 0; i < surf.length; i++) surf[i] = (i * 2654435761 >>> 13) & 0xff;
+  let rebuilt = new Uint8Array(lay.totalSize);
+  const mips = [];
+  for (let m = 0; m < 7; m++) {
+    const lin = await tex.swizzler.unswizzleMip(SwizzleMode.PS5, TexFormat.BC7,
+                                                surf, 256, 256, 7, m);
+    const mw = Math.max(1, 256 >> m);
+    check(lin.length === await tex.encoder.encodedSizeBC7(mw, mw),
+          `PS5 unswizzleMip mip ${m}: ${lin.length} bytes`);
+    mips.push(lin);
+    rebuilt = await tex.swizzler.reswizzleMip(SwizzleMode.PS5, TexFormat.BC7,
+                                              rebuilt, lin, 256, 256, 7, m);
+  }
+  let same = true;
+  for (let m = 0; m < 7 && same; m++) {
+    const again = await tex.swizzler.unswizzleMip(SwizzleMode.PS5,
+        TexFormat.BC7, rebuilt, 256, 256, 7, m);
+    same = again.length === mips[m].length &&
+           again.every((b, i) => b === mips[m][i]);
+  }
+  check(same, "PS5 reswizzleMip -> unswizzleMip identity for every mip");
+  // single-mip API agrees with mip 0 of the chain
+  const one = await tex.swizzler.unswizzlePS5(TexFormat.BC7,
+      surf.subarray(lay.mips[0].offset, lay.mips[0].offset + lay.mips[0].size),
+      256, 256);
+  check(one.every((b, i) => b === mips[0][i]),
+        "unswizzlePS5 (single mip) == unswizzleMip(mip 0)");
+  // tile-mode detection from the data size (the two sample sizes seen in
+  // G1T content: 256x256 BC7 = 90112 (4KB), 1024x128 BC7 = 524288 (64KB))
+  check(await tex.swizzler.detectPS5TileMode(TexFormat.BC7, 256, 256, 7, 90112)
+            === PS5TileMode.STANDARD_4KB &&
+        await tex.swizzler.detectPS5TileMode(TexFormat.BC7, 1024, 128, 6, 524288)
+            === PS5TileMode.STANDARD_64KB,
+        "detectPS5TileMode picks 4KB / 64KB from the data size");
+  let bad = false;
+  try { await tex.swizzler.detectPS5TileMode(TexFormat.BC7, 256, 256, 7, 90113); }
+  catch (e) { bad = e instanceof TexCodecError; }
+  check(bad, "detectPS5TileMode rejects a size no mode produces");
+  check(await tex.swizzler.defaultPS5TileMode(TexFormat.BC7, 256, 256)
+            === PS5TileMode.STANDARD_4KB &&
+        await tex.swizzler.defaultPS5TileMode(TexFormat.BC7, 1024, 128)
+            === PS5TileMode.STANDARD_64KB,
+        "defaultPS5TileMode heuristic");
+  // legacy layout still reachable
+  const legacySize = await tex.swizzler.swizzledSizePS5(TexFormat.BC7, 256, 256,
+                                                        PS5TileMode.LEGACY);
+  check(legacySize === 65536, "PS5 LEGACY tile mode still selectable");
+  let threw = false;
+  try {
+    await tex.swizzler.surfaceLayout(SwizzleMode.SWITCH, TexFormat.BC7, 64, 64, 2);
+  } catch (e) { threw = e instanceof TexCodecError; }
+  check(threw, "surfaceLayout on an unsupported mode throws TexCodecError");
+  check(typeof mod._texc_get_surface_layout === "function" &&
+        typeof mod._texc_unswizzle_mip === "function" &&
+        typeof mod._texc_reswizzle_mip === "function" &&
+        typeof mod._texc_unswizzle_mip_alloc === "function",
+        "surface layout raw exports present");
 }
 
 /* ---- reswizzle raw exports ---- */

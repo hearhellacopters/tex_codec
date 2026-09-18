@@ -148,7 +148,8 @@ the test suite. Supported layouts:
 
 | Mode | Layout |
 |---|---|
-| `TEXC_SWIZZLE_PS4` / `TEXC_SWIZZLE_PS5` | Orbis/Prospero 8x8 micro-tile Morton |
+| `TEXC_SWIZZLE_PS4` | Orbis 8x8 micro-tile Morton |
+| `TEXC_SWIZZLE_PS5` | Prospero / AMD GFX10 block tiling (`arg` = `texc_ps5_tile_mode`, 0 = standard 4 KB blocks); whole mip chains via the surface-layout API below |
 | `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto) |
 | `TEXC_SWIZZLE_PSVITA` | GXM: 32x32 pixel tiles for raw formats (`arg` = bytes per pixel, 0 = the format's own; G1T ships 8/16/24/32bpp raw Vita textures), Morton / Z-order for block formats |
 | `TEXC_SWIZZLE_X360` | Xenos macro tiling |
@@ -173,6 +174,76 @@ image are dropped, as the reference does. That only happens when a
 dimension is not a multiple of 32, where the mapping is consequently not
 invertible. A test compares the port against the reference formula across
 sizes and 8/16/24/32bpp.
+
+### PS5 (Prospero) tiling and mip-chain surfaces
+
+The PS5 GPU is an AMD GFX10-class part, and a texture is a row-major raster
+of fixed-size blocks (256 B, 4 KB or 64 KB) whose interior uses AMD's
+"standard" address swizzle - the layout AMD's open-source addrlib computes
+for `SW_4KB_S` and friends, and what Sony's `AgcGpuAddress` library calls
+`TileMode::kStandard4KB` etc. Every known G1T PS5 texture uses the 4 KB
+mode (Sony's own texture tool defaults sampled textures to it), which is
+`arg` = `TEXC_PS5_TILE_DEFAULT` (0). `TEXC_PS5_TILE_STANDARD_256B` (1),
+`_4KB` (5) and `_64KB` (9) match Sony's enum so a header value can be
+passed straight through; `TEXC_PS5_TILE_LEGACY` (0x100) keeps the pre-1.6
+layout reachable (it equals the 64 KB mode for 16-byte blocks and 32bpp raw
+data, but is not a hardware layout for anything else).
+
+Koei Tecmo content is **not** all 4 KB: small textures (mip 0 up to 64 KB
+in every sample seen) use `STANDARD_4KB`, large ones (`1024x128` and
+`64x2048` BC7 samples, mip 0 = 128 KB) use `STANDARD_64KB`, and G1T
+carries no tile-mode field. The two layouts have different whole-surface
+sizes, so the mode can be recovered from the texture's data size:
+
+```c
+texc_ps5_tile_mode tm;
+texc_ps5_detect_tile_mode(TEXC_FORMAT_BC7, 1024, 128, 6, 1,
+                          /*data bytes in the G1T*/ 524288, &tm);
+/* tm == TEXC_PS5_TILE_STANDARD_64KB (a 4 KB surface would be 196608) */
+```
+
+For the write path, `texc_ps5_default_tile_mode(format, w, h)` returns the
+choice observed in Koei Tecmo content (64 KB blocks once mip 0 exceeds
+64 KB); it is a heuristic that matches every sample so far. The CLI's
+`--arg auto` uses the detector when unswizzling and the heuristic when
+reswizzling.
+
+A PS5 texture stores its **whole mip chain as one surface**: the smallest
+mips that fit in half a block share a single "mip tail" block stored
+*first*, then the remaining mips follow in *descending* order, so mip 0 is
+*last*; array slices and cube faces repeat the chain. Because the padding,
+tail packing and ordering are platform-defined, the library exposes the
+layout instead of leaving callers to guess offsets:
+
+```c
+texc_surface_layout lay;
+texc_get_surface_layout(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 256, 256,
+                        /*mips*/ 7, /*slices*/ 1, /*arg*/ 0, &lay);
+/* lay.total_size == 90112: 64K (mip 0) + 16K + 4K + one 4K tail block;
+   lay.mips[0].offset == 24576, lay.mips[3].in_tail == 1 ... */
+
+/* pull any mip straight out of the surface, ready to decode */
+texc_unswizzle_mip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 256, 256, 7, 1, 0,
+                   /*mip*/ 0, /*slice*/ 0, surface, lay.total_size,
+                   linear, texc_encoded_size(TEXC_FORMAT_BC7, 256, 256));
+/* and back: zero-fill total_size bytes, then texc_reswizzle_mip per mip */
+```
+
+`texc_unswizzle` / `texc_reswizzle` with `TEXC_SWIZZLE_PS5` handle a
+single mip (its block-padded raster, `texc_swizzled_size` bytes) and are
+exactly `texc_unswizzle_mip` on a one-level surface, so mip 0 of a chain
+can also be converted by pointing them at `lay.mips[0].offset`.
+`texc_get_surface_layout` also works for `TEXC_SWIZZLE_NONE` (mips back to
+back, mip 0 first); other modes return `TEXC_ERR_UNSUPPORTED`.
+
+The implementation is derived from AMD addrlib (MIT). It is verified
+bit-for-bit against Sony's `AgcGpuAddress` host library across tile modes,
+element sizes, odd sizes, mip counts and slices by `tools/ps5_oracle`
+(needs the PS5 SDK, never committed); the SDK-generated known-answer table
+it produces (`tests/ps5_kat.h`) is checked by the normal test suite, and
+so are real G1T textures when `samples/ps5/textures/` is present. 3D
+(volume) textures, render-target/depth tile modes and MSAA are not
+implemented.
 
 ## Image utilities
 
@@ -309,6 +380,12 @@ texc encode -i art.tga -f BC1 --alpha-threshold 200 --swizzle ps4 -o tiled.bc1
 texc unswizzle -i tiled.bin  -f BC7 -w 256 -h 256 -m switch --arg auto -o linear.bin
 texc reswizzle -i linear.bin -f BC7 -w 256 -h 256 -m switch --arg auto -o tiled.bin
 
+# PS5: the whole mip chain is one surface - describe it, then pull a mip out
+# (--arg auto recovers the 4KB / 64KB tile mode from the input size)
+texc info -f BC7 -w 256 -h 256 -m ps5 --mips 7
+texc unswizzle -i file.g1t --offset 0x38 -f BC7 -w 256 -h 256 -m ps5 --arg auto --mips 7 --mip 0 -o mip0.bin
+texc reswizzle -i mip0.bin -f BC7 -w 256 -h 256 -m ps5 --mips 7 --mip 0 -o surface.bin
+
 # image utilities
 texc convert -i in.raw --src-profile RGBA8 --dst-profile BGRA8 -o out.raw
 texc flip -i in.raw -w 64 -h 64 --dir y -o out.raw
@@ -430,9 +507,21 @@ await tex.encoder.encodeBC1(rgba, w, h, { alphaThreshold: 200 });
 await tex.encoder.encodedSizeASTC_4x4(w, h);
 await tex.swizzler.unswizzlePS4(TexFormat.BC7, tiled, w, h);   // -> linear
 await tex.swizzler.reswizzlePS4(TexFormat.BC7, linear, w, h);  // -> tiled
+
+// PS5: a whole mip chain is one surface (mip tail first, mip 0 last)
+const lay = await tex.swizzler.surfaceLayout(SwizzleMode.PS5, TexFormat.BC7,
+                                             256, 256, /*mips*/ 7);
+// lay.totalSize, lay.mips[0].offset, lay.mips[3].inTail, ...
+const mip0 = await tex.swizzler.unswizzleMip(SwizzleMode.PS5, TexFormat.BC7,
+                                             surface, 256, 256, 7, /*mip*/ 0);
+// G1T has no tile-mode field: recover 4KB vs 64KB blocks from the data size
+const tm = await tex.swizzler.detectPS5TileMode(TexFormat.BC7, 1024, 128, 6,
+                                                surface.byteLength);
 ```
 
 Mode names: `PS4, PS5, Switch, PSVita, X360, PSP, N3DS, WiiU, DX12_64KB`.
+`surfaceLayout` / `unswizzleMip` / `reswizzleMip` take `{ sliceCount,
+slice, arg }` options (`arg` = a `PS5TileMode` for PS5).
 
 Every method throws `TexCodecError` (with a `.code` from `TexResult`) on
 failure. In a bundler, pass the module factory yourself:
@@ -447,7 +536,9 @@ typed signatures:
 - **Generic**: `_texc_decode`, `_texc_encode`, `_texc_encode_ex`,
   `_texc_encode_with_options(..., alphaThreshold)`, `_texc_decode_f32`,
   `_texc_unswizzle`, `_texc_swizzle`, `_texc_swizzled_size`,
-  `_texc_decode_swizzled`, sizes/metadata, `_malloc` / `_free`.
+  `_texc_decode_swizzled`, `_texc_get_surface_layout`,
+  `_texc_unswizzle_mip`, `_texc_reswizzle_mip`, sizes/metadata,
+  `_malloc` / `_free`.
 - **Per format** (all 45): `_texc_decode_bc7(src, srcSize, w, h, dst,
   dstSize)`, `_texc_encode_etc2_rgba8(..., alphaThreshold)`,
   `_texc_encoded_size_astc_12x12(w, h)`, …
@@ -461,7 +552,8 @@ typed signatures:
   `_texc_crop`.
 - **Allocation helpers**: `_texc_decode_alloc`, `_texc_decode_f32_alloc`,
   `_texc_decode_swizzled_alloc`, `_texc_encode_alloc`,
-  `_texc_swizzle_alloc`, with `_texc_last_error()` for the failure reason.
+  `_texc_swizzle_alloc`, `_texc_unswizzle_mip_alloc`, with
+  `_texc_last_error()` for the failure reason.
 
 ## FFI notes (C# / Rust / Python)
 
@@ -485,6 +577,9 @@ tests/                   roundtrip + swizzle-identity test suite
 ## Credits / references
 
 - swizzle machinery credit: Piken / DwayneR, github.com/fdwr
+- PS5 tiling: derived from AMD addrlib (MIT, GPUOpen-Drivers/pal,
+  gfx10addrlib.cpp / gfx10SwizzlePattern.h); the pre-1.6 legacy layout is
+  a port of id-daemon's RawTex Cooker
 - Format specifications: Khronos Data Format Spec (ASTC, ETC2/EAC),
   Microsoft D3D BC1-7 specs, AMD ATC extension, PowerVR PVRTC documentation
 - Reference codebases studied: tex-decoder, texture2ddecoder, Basis

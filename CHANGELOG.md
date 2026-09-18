@@ -15,6 +15,52 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.6.0] - 2026-09-17
+
+### Changed
+- **PS5 tiling rewritten.** `TEXC_SWIZZLE_PS5` now implements the real
+  Prospero layout: AMD GFX10 "standard" swizzle blocks (256 B / 4 KB /
+  64 KB) in a row-major raster, defaulting to the 4 KB mode Sony's texture
+  tool uses for sampled textures and small G1T PS5 textures use; large
+  ones (mip 0 above 64 KB) use the 64 KB mode. The previous code (a RawTex
+  Cooker port) approximated 64 KB blocks for everything and read mip 0 at
+  the wrong offset, which is why BCn textures came out as scrambled 64px
+  tiles. Verified bit-for-bit against Sony's `AgcGpuAddress` host library
+  (see `tools/ps5_oracle`), with an SDK-generated known-answer table in
+  the test suite and all twelve sample G1T textures decoding correctly.
+  **Output of the PS5 mode and `texc_swizzled_size(TEXC_SWIZZLE_PS5, ...)`
+  change as a result**; pass `TEXC_PS5_TILE_LEGACY` as `arg` to get the
+  old layout.
+
+### Added
+- `texc_ps5_tile_mode` (`arg` for the PS5 mode; values match Sony's
+  `sce::AgcGpuAddress::TileMode`): `DEFAULT`, `STANDARD_256B`,
+  `STANDARD_4KB`, `STANDARD_64KB`, `LEGACY`.
+- `texc_ps5_detect_tile_mode`: recovers the tile mode from a texture's
+  data size (G1T has no tile-mode field; the 4 KB and 64 KB surfaces have
+  different sizes), and `texc_ps5_default_tile_mode`: the observed Koei
+  Tecmo choice for the write path (64 KB blocks once mip 0 exceeds 64 KB).
+  JS: `detectPS5TileMode()` / `defaultPS5TileMode()`; CLI: `--arg auto`
+  on the PS5 mode.
+- **Mip-chain surface API**: `texc_get_surface_layout` describes a whole
+  tiled surface (mip chain x slices) - total and per-slice size, block
+  geometry, and every mip's offset, padded size and mip-tail position -
+  and `texc_unswizzle_mip` / `texc_reswizzle_mip` address one mip of one
+  slice inside it. Implemented for PS5 (where the mip tail block is stored
+  first and mip 0 last, so offsets cannot be derived from linear sizes) and
+  for `TEXC_SWIZZLE_NONE`; other modes report `TEXC_ERR_UNSUPPORTED`.
+  `texc_surface_layout` / `texc_mip_layout` structs, `TEXC_MAX_MIPS`.
+- WASM: `_texc_get_surface_layout`, `_texc_unswizzle_mip`,
+  `_texc_reswizzle_mip`, `_texc_unswizzle_mip_alloc`. JS wrapper:
+  `PS5TileMode`, `TexSwizzler.surfaceLayout()`, `unswizzleMip()`,
+  `reswizzleMip()`, with `SurfaceLayout` / `MipLayout` types.
+- CLI: `--mips N [--slices N] --mip N [--slice N]` on `unswizzle` /
+  `reswizzle` (whole-surface mode; `--surface <file>` updates an existing
+  surface), and `texc info ... --mips N` prints the surface layout.
+- `tools/ps5_oracle`: SDK-backed verification matrix and known-answer
+  generator (`tests/ps5_kat.h`); the test suite also checks real G1T
+  samples when `samples/ps5/textures/` is present.
+
 ## [1.5.0] - 2026-09-04
 
 ### Added

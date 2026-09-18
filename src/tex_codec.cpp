@@ -554,6 +554,84 @@ int texc_reswizzle(texc_swizzle_mode mode, texc_format format,
                         src, src_size, dst, dst_size, arg);
 }
 
+int texc_get_surface_layout(texc_swizzle_mode mode, texc_format format,
+                            uint32_t width, uint32_t height,
+                            uint32_t mip_count, uint32_t slice_count,
+                            uint32_t arg, texc_surface_layout *out) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format) ||
+        !out || !width || !height || !mip_count || !slice_count)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    return texc::surface_layout(mode, format, width, height,
+                                mip_count, slice_count, arg, out);
+}
+
+int texc_ps5_detect_tile_mode(texc_format format,
+                              uint32_t width, uint32_t height,
+                              uint32_t mip_count, uint32_t slice_count,
+                              uint64_t data_size,
+                              texc_ps5_tile_mode *out_mode) {
+    if (!out_mode || !valid_format(format) || !width || !height ||
+        !mip_count || !slice_count || !data_size)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    static const texc_ps5_tile_mode candidates[] = {
+        TEXC_PS5_TILE_STANDARD_4KB, TEXC_PS5_TILE_STANDARD_64KB,
+        TEXC_PS5_TILE_STANDARD_256B,
+    };
+    for (texc_ps5_tile_mode tm : candidates) {
+        texc_surface_layout lay;
+        if (texc::surface_layout(TEXC_SWIZZLE_PS5, format, width, height,
+                                 mip_count, slice_count, tm, &lay) != TEXC_OK)
+            continue;
+        if (lay.total_size == data_size) {
+            *out_mode = tm;
+            return TEXC_OK;
+        }
+    }
+    return TEXC_ERR_BAD_DATA;
+}
+
+texc_ps5_tile_mode texc_ps5_default_tile_mode(texc_format format,
+                                              uint32_t width, uint32_t height) {
+    if (!valid_format(format) || !width || !height)
+        return TEXC_PS5_TILE_STANDARD_4KB;
+    if (!swizzle_target(format, height)) return TEXC_PS5_TILE_STANDARD_4KB;
+    const size_t mip0 = texc_encoded_size(format, width, height);
+    return mip0 > 65536 ? TEXC_PS5_TILE_STANDARD_64KB
+                        : TEXC_PS5_TILE_STANDARD_4KB;
+}
+
+int texc_unswizzle_mip(texc_swizzle_mode mode, texc_format format,
+                       uint32_t width, uint32_t height,
+                       uint32_t mip_count, uint32_t slice_count,
+                       uint32_t arg, uint32_t mip, uint32_t slice,
+                       const uint8_t *surface, size_t surface_size,
+                       uint8_t *dst, size_t dst_size) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format) ||
+        !surface || !dst || !width || !height || !mip_count || !slice_count)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    return texc::convert_mip(mode, format, width, height, mip_count,
+                             slice_count, arg, mip, slice,
+                             surface, surface_size, dst, dst_size, true);
+}
+
+int texc_reswizzle_mip(texc_swizzle_mode mode, texc_format format,
+                       uint32_t width, uint32_t height,
+                       uint32_t mip_count, uint32_t slice_count,
+                       uint32_t arg, uint32_t mip, uint32_t slice,
+                       const uint8_t *src, size_t src_size,
+                       uint8_t *surface, size_t surface_size) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format) ||
+        !surface || !src || !width || !height || !mip_count || !slice_count)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    return texc::convert_mip(mode, format, width, height, mip_count,
+                             slice_count, arg, mip, slice,
+                             src, src_size, surface, surface_size, false);
+}
+
 int texc_decode_swizzled(texc_swizzle_mode mode, texc_format format,
                          uint32_t width, uint32_t height,
                          const uint8_t *src, size_t src_size,

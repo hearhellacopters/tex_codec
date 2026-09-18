@@ -3,6 +3,7 @@ build/
 build-*/
 dist/
 tex_codec*.zip
+samples/
 
 # Visual Studio / IDE state
 .vs/

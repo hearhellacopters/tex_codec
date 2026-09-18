@@ -299,6 +299,9 @@ struct options {
     texc_swizzle_mode mode = TEXC_SWIZZLE_NONE;
     bool mode_set = false;
     uint32_t arg = 0;
+    uint32_t mips = 0;              /* >0: whole-surface (mip chain) mode  */
+    uint32_t slices = 1;
+    uint32_t mip = 0, slice = 0;
     uint32_t alpha_threshold = 128;
     texc_pixel_profile src_profile = TEXC_PROFILE_INVALID;
     texc_pixel_profile dst_profile = TEXC_PROFILE_INVALID;
@@ -309,6 +312,7 @@ struct options {
     char flip_dir = 'y';
     bool flip_y_after = false;      /* decode: flip result vertically */
     bool f32 = false;
+    std::string surface;            /* reswizzle --mips: surface to update */
     std::string palette;            /* paletted Wii formats: palette file  */
     texc_palette_format palette_format = TEXC_PALETTE_IA8;
     bool palette_format_set = false;
@@ -361,7 +365,16 @@ static void usage(const char *cmd) {
 "    -i <file> [--offset/--size]   input data\n"
 "    -f <format> -w/-h <N>         geometry the tiling is computed from\n"
 "    -m <mode> [--arg <N|auto>]    platform layout (`texc modes`)\n"
-"    -o <out>                      output file\n", c.c_str(),
+"    -o <out>                      output file\n"
+"  PS5: --arg auto recovers the tile mode from the input size (G1T mixes\n"
+"  4KB and 64KB blocks by texture size) or picks Koei's observed default\n"
+"  when reswizzling.\n"
+"  Whole-surface (mip chain) mode - PS5 and none:\n"
+"    --mips <N> [--slices <N>]     the input/output is a complete tiled\n"
+"                                  surface of N mips (x slices)\n"
+"    --mip <N> [--slice <N>]       the level (and layer) to extract / insert\n"
+"    --surface <file>              reswizzle: existing surface to update\n"
+"                                  (default: start from zeros)\n", c.c_str(),
         c == "unswizzle"
             ? "UNSWIZZLE: platform-tiled -> linear (use before decoding)."
             : "RESWIZZLE: linear -> platform-tiled (put the tiling back).");
@@ -378,8 +391,10 @@ static void usage(const char *cmd) {
 "  Copy a rectangle out of raw pixel data.\n");
     else if (c == "info") printf(
 "texc info -f <format> -w <W> -h <H> [-m <mode> --arg <N|auto>]\n"
+"          [--mips <N> --slices <N>]\n"
 "  Print block geometry, encoded/decoded sizes and (with -m) the\n"
-"  platform-tiled size.\n");
+"  platform-tiled size; with --mips also the whole-surface layout (where\n"
+"  every mip lives - e.g. a PS5 texture's total size and mip 0 offset).\n");
     else printf(
 "texc — tex_codec command line (version %s)\n"
 "\n"
@@ -428,6 +443,10 @@ static options parse_args(int argc, char **argv) {
             o.arg = lower(v) == "auto" ? 0xFFFFFFFFu
                                        : (uint32_t)parse_u64(v, "arg");
         }
+        else if (a == "--mips")   o.mips = (uint32_t)parse_u64(need(i), "mips");
+        else if (a == "--slices") o.slices = (uint32_t)parse_u64(need(i), "slices");
+        else if (a == "--mip")    o.mip = (uint32_t)parse_u64(need(i), "mip");
+        else if (a == "--slice")  o.slice = (uint32_t)parse_u64(need(i), "slice");
         else if (a == "--alpha-threshold")
             o.alpha_threshold = (uint32_t)parse_u64(need(i), "alpha-threshold");
         else if (a == "--src-profile") o.src_profile = parse_profile(need(i));
@@ -448,6 +467,7 @@ static options parse_args(int argc, char **argv) {
         else if (a == "--flip-y") o.flip_y_after = true;
         else if (a == "--f32")    o.f32 = true;
         else if (a == "--palette") o.palette = need(i);
+        else if (a == "--surface") o.surface = need(i);
         else if (a == "--palette-format") {
             o.palette_format = parse_palette_format(need(i));
             o.palette_format_set = true;
@@ -572,10 +592,96 @@ static void cmd_encode(const options &o) {
     }
 }
 
-static void cmd_swizzle(const options &o, bool to_linear) {
+/* Whole-surface mode (--mips N): the input is a complete tiled mip chain
+ * (x slices) as stored by the platform; one mip/slice is extracted or
+ * inserted. Reswizzle reads an existing surface with --surface (or starts
+ * from zeros) and writes the updated surface. */
+/* PS5 `--arg auto`: when reading a whole surface the tile mode is
+ * recovered from the data size; when writing, the observed Koei Tecmo
+ * choice (64KB blocks once mip 0 exceeds 64 KB) is used. */
+static uint32_t resolve_ps5_arg(const options &o, uint64_t data_size,
+                                bool reading) {
+    if (o.mode != TEXC_SWIZZLE_PS5 || o.arg != 0xFFFFFFFFu) return o.arg;
+    if (reading && data_size) {
+        texc_ps5_tile_mode tm;
+        int rc = texc_ps5_detect_tile_mode(o.format, o.width, o.height,
+                                           o.mips ? o.mips : 1, o.slices,
+                                           data_size, &tm);
+        if (rc != TEXC_OK)
+            die("no PS5 tile mode produces a %llu-byte surface for this "
+                "texture; pass --arg 5 (4KB) or --arg 9 (64KB) explicitly",
+                (unsigned long long)data_size);
+        fprintf(stderr, "ps5 tile mode: %s (from the data size)\n",
+                tm == TEXC_PS5_TILE_STANDARD_64KB ? "standard 64KB" :
+                tm == TEXC_PS5_TILE_STANDARD_256B ? "standard 256B" :
+                                                    "standard 4KB");
+        return (uint32_t)tm;
+    }
+    texc_ps5_tile_mode tm = texc_ps5_default_tile_mode(o.format, o.width,
+                                                       o.height);
+    fprintf(stderr, "ps5 tile mode: %s (default for this size)\n",
+            tm == TEXC_PS5_TILE_STANDARD_64KB ? "standard 64KB"
+                                              : "standard 4KB");
+    return (uint32_t)tm;
+}
+
+static void cmd_swizzle_mip(const options &oin, bool to_linear) {
+    options o = oin;
+    if (o.arg == 0xFFFFFFFFu && o.mode == TEXC_SWIZZLE_PS5) {
+        uint64_t data_size = 0;
+        if (to_linear)
+            data_size = read_file(o.input, o.offset, o.size).size();
+        o.arg = resolve_ps5_arg(o, data_size, to_linear);
+    }
+    texc_surface_layout lay;
+    int rc = texc_get_surface_layout(o.mode, o.format, o.width, o.height,
+                                     o.mips, o.slices, o.arg, &lay);
+    if (rc != TEXC_OK) die_rc("surface layout", rc);
+    if (o.mip >= lay.mip_count) die("--mip %u out of range (0..%u)", o.mip,
+                                   lay.mip_count - 1);
+    if (o.slice >= lay.slice_count) die("--slice %u out of range (0..%u)",
+                                       o.slice, lay.slice_count - 1);
+    const texc_mip_layout &mi = lay.mips[o.mip];
+    const size_t lin = (size_t)mi.width * mi.height * lay.element_bytes;
+    if (lay.total_size > (uint64_t)SIZE_MAX) die("surface too large");
+
+    if (to_linear) {
+        std::vector<uint8_t> surf = read_file(o.input, o.offset,
+                                              o.size ? o.size : lay.total_size);
+        if (surf.size() < lay.total_size)
+            die("input holds %zu bytes but the surface needs %llu",
+                surf.size(), (unsigned long long)lay.total_size);
+        std::vector<uint8_t> out(lin);
+        rc = texc_unswizzle_mip(o.mode, o.format, o.width, o.height, o.mips,
+                                o.slices, o.arg, o.mip, o.slice, surf.data(),
+                                surf.size(), out.data(), out.size());
+        if (rc != TEXC_OK) die_rc("unswizzle mip", rc);
+        write_file(o.output, out.data(), out.size());
+    } else {
+        std::vector<uint8_t> src = read_file(o.input, o.offset, o.size);
+        std::vector<uint8_t> surf((size_t)lay.total_size, 0);
+        if (!o.surface.empty()) {
+            std::vector<uint8_t> prev = read_file(o.surface, 0, 0);
+            if (prev.size() != lay.total_size)
+                die("--surface holds %zu bytes, expected %llu", prev.size(),
+                    (unsigned long long)lay.total_size);
+            surf = prev;
+        }
+        rc = texc_reswizzle_mip(o.mode, o.format, o.width, o.height, o.mips,
+                                o.slices, o.arg, o.mip, o.slice, src.data(),
+                                src.size(), surf.data(), surf.size());
+        if (rc != TEXC_OK) die_rc("reswizzle mip", rc);
+        write_file(o.output, surf.data(), surf.size());
+    }
+}
+
+static void cmd_swizzle(const options &oin, bool to_linear) {
+    options o = oin;
     require(o, true, true, true, true);
     if (!o.mode_set) die("-m <mode> is required");
+    if (o.mips) { cmd_swizzle_mip(o, to_linear); return; }
     std::vector<uint8_t> src = read_file(o.input, o.offset, o.size);
+    o.arg = resolve_ps5_arg(o, src.size(), to_linear);
 
     size_t out_size = to_linear
         ? texc_encoded_size(o.format, o.width, o.height)
@@ -651,6 +757,28 @@ static void cmd_info(const options &o) {
                                       o.arg);
         printf("tiled size      %zu bytes\n", s);
     }
+    if (o.mode_set && o.mips) {
+        texc_surface_layout lay;
+        int rc = texc_get_surface_layout(o.mode, o.format, o.width, o.height,
+                                         o.mips, o.slices, o.arg, &lay);
+        if (rc != TEXC_OK) die_rc("surface layout", rc);
+        printf("surface         %u mips x %u slices, %llu bytes "
+               "(%llu per slice)\n", lay.mip_count, lay.slice_count,
+               (unsigned long long)lay.total_size,
+               (unsigned long long)lay.slice_size);
+        printf("tiling block    %ux%u elements, %u bytes; mip tail from "
+               "mip %u\n", lay.block_width, lay.block_height, lay.block_bytes,
+               lay.first_mip_in_tail);
+        printf("  mip  elements    padded      offset      size  tail\n");
+        for (uint32_t m = 0; m < lay.mip_count; m++) {
+            const texc_mip_layout &mi = lay.mips[m];
+            printf("  %3u  %5ux%-5u %5ux%-5u %10llu %9llu", m, mi.width,
+                   mi.height, mi.padded_width, mi.padded_height,
+                   (unsigned long long)mi.offset, (unsigned long long)mi.size);
+            if (mi.in_tail) printf("  (%u,%u)", mi.tail_x, mi.tail_y);
+            printf("\n");
+        }
+    }
 }
 
 static void cmd_version(bool verbose) {
@@ -677,7 +805,12 @@ static void cmd_list(const std::string &what) {
     } else if (what == "modes") {
         printf("  none ps4 ps5 switch psvita x360 psp 3ds wiiu dx12_64kb\n"
                "  (--arg: switch = block height log2 or 'auto';\n"
-               "   wiiu = GX2 swizzle value; x360 = pitch override)\n");
+               "   ps5 = tile mode: 0/5 = standard 4KB, 1 = 256B,\n"
+               "         9 = 64KB, 256 = legacy pre-1.6 layout, 'auto' =\n"
+               "         detect from the data size (unswizzle) / Koei's\n"
+               "         observed choice (reswizzle: 64KB once mip 0 > 64KB);\n"
+               "   psvita = raw bytes per pixel; wiiu = GX2 swizzle value;\n"
+               "   x360 = pitch override)\n");
     } else {
         for (int p = 1; p < TEXC_PROFILE_COUNT; p++)
             printf("  %-12s %u bytes/px\n",

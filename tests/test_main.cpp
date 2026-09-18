@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "../include/tex_codec.h"
+#include "../tools/ps5_oracle/kat_common.h"
+#include "ps5_kat.h"
 
 static int g_failures = 0;
 
@@ -842,6 +844,205 @@ static void test_wii(void) {
     printf("  Wii GX format checks done\n");
 }
 
+/* PS5 (Agc / GFX10 standard swizzle) mip-chain surfaces against the
+ * known-answer table generated from Sony's AgcGpuAddress library
+ * (tests/ps5_kat.h), plus reswizzle_mip -> unswizzle_mip identity, the
+ * single-mip path, and the real sample files when they are present. */
+static_assert(sizeof(texc_mip_layout) == 48, "texc_mip_layout ABI");
+static_assert(sizeof(texc_surface_layout) == 48 + 16 * 48,
+              "texc_surface_layout ABI (the JS wrapper hard-codes it)");
+
+static uint64_t hash_mips(const texc_surface_layout &lay, texc_swizzle_mode mode,
+                          texc_format fmt, uint32_t w, uint32_t h, uint32_t arg,
+                          const std::vector<uint8_t> &surf, const char *label,
+                          std::vector<uint8_t> *rebuilt) {
+    uint64_t hsh = kat_fnv_init();
+    for (uint32_t sl = 0; sl < lay.slice_count; ++sl)
+        for (uint32_t m = 0; m < lay.mip_count; ++m) {
+            const texc_mip_layout &mi = lay.mips[m];
+            const size_t lin = (size_t)mi.width * mi.height * lay.element_bytes;
+            const uint32_t mw = (w >> m) ? (w >> m) : 1;
+            const uint32_t mh = (h >> m) ? (h >> m) : 1;
+            CHECK(lin == texc_encoded_size(fmt, mw, mh),
+                  "%s mip%u: layout size %zu != encoded size %zu", label, m,
+                  lin, texc_encoded_size(fmt, mw, mh));
+            std::vector<uint8_t> out(lin + 8, 0xEE);
+            int rc = texc_unswizzle_mip(mode, fmt, w, h, lay.mip_count,
+                                        lay.slice_count, arg, m, sl,
+                                        surf.data(), surf.size(), out.data(), lin);
+            CHECK(rc == TEXC_OK, "%s unswizzle_mip mip%u slice%u rc=%d", label,
+                  m, sl, rc);
+            CHECK(out[lin] == 0xEE, "%s mip%u wrote past the linear size", label, m);
+            hsh = kat_fnv(hsh, out.data(), lin);
+            if (rebuilt) {
+                rc = texc_reswizzle_mip(mode, fmt, w, h, lay.mip_count,
+                                        lay.slice_count, arg, m, sl, out.data(),
+                                        lin, rebuilt->data(), rebuilt->size());
+                CHECK(rc == TEXC_OK, "%s reswizzle_mip mip%u rc=%d", label, m, rc);
+            }
+        }
+    return hsh;
+}
+
+static void test_ps5_layout(void) {
+    size_t n = 0;
+    for (size_t i = 0; i < k_kat_case_count; ++i) {
+        const kat_case &c = k_kat_cases[i];
+        const ps5_kat &k = k_ps5_kat[i];
+        char label[96];
+        snprintf(label, sizeof label, "PS5 kat[%zu] tm=%u %s %ux%u m=%u s=%u",
+                 i, c.tile_mode, c.format_name, c.w, c.h, c.mips, c.slices);
+        CHECK(k.tile_mode == c.tile_mode && k.format == c.format && k.w == c.w &&
+              k.h == c.h && k.mips == c.mips && k.slices == c.slices,
+              "%s: ps5_kat.h out of sync with kat_common.h", label);
+
+        texc_surface_layout lay;
+        int rc = texc_get_surface_layout(TEXC_SWIZZLE_PS5, c.format, c.w, c.h,
+                                         c.mips, c.slices, c.tile_mode, &lay);
+        CHECK(rc == TEXC_OK, "%s layout rc=%d", label, rc);
+        if (rc != TEXC_OK) continue;
+        CHECK(lay.total_size == k.surface_size, "%s total %llu != %llu", label,
+              (unsigned long long)lay.total_size,
+              (unsigned long long)k.surface_size);
+        if (lay.total_size != k.surface_size) continue;
+
+        std::vector<uint8_t> surf((size_t)lay.total_size);
+        kat_fill(surf.data(), surf.size(), kat_seed(i));
+        std::vector<uint8_t> rebuilt(surf.size(), 0);
+        const uint64_t hsh = hash_mips(lay, TEXC_SWIZZLE_PS5, c.format, c.w, c.h,
+                                       c.tile_mode, surf, label, &rebuilt);
+        CHECK(hsh == k.hash, "%s hash %016llx != SDK %016llx", label,
+              (unsigned long long)hsh, (unsigned long long)k.hash);
+        /* Rebuilding every mip must reproduce the surface (padding bytes are
+         * unreachable, so compare through the layout instead). */
+        const uint64_t again = hash_mips(lay, TEXC_SWIZZLE_PS5, c.format, c.w,
+                                         c.h, c.tile_mode, rebuilt, label, nullptr);
+        CHECK(again == hsh, "%s reswizzle_mip -> unswizzle_mip not identity",
+              label);
+
+        /* Single-mip API == a one-level surface. */
+        texc_surface_layout one;
+        rc = texc_get_surface_layout(TEXC_SWIZZLE_PS5, c.format, c.w, c.h, 1, 1,
+                                     c.tile_mode, &one);
+        CHECK(rc == TEXC_OK && one.total_size ==
+                  texc_swizzled_size(TEXC_SWIZZLE_PS5, c.format, c.w, c.h,
+                                     c.tile_mode),
+              "%s single-mip size mismatch", label);
+        ++n;
+    }
+    printf("  PS5 surface layout: %zu SDK known-answer cases match\n", n);
+
+    /* NONE: mips back to back. */
+    {
+        texc_surface_layout lay;
+        int rc = texc_get_surface_layout(TEXC_SWIZZLE_NONE, TEXC_FORMAT_BC1, 64,
+                                         32, 7, 2, 0, &lay);
+        CHECK(rc == TEXC_OK && lay.mips[0].offset == 0 &&
+                  lay.mips[1].offset == 64 * 32 / 2 &&
+                  lay.mips[6].width == 1 && lay.mips[6].height == 1 &&
+                  lay.slice_size == 1024 + 256 + 64 + 16 + 8 + 8 + 8 &&
+                  lay.total_size == 2 * lay.slice_size,
+              "NONE surface layout rc=%d slice_size=%llu", rc,
+              (unsigned long long)lay.slice_size);
+    }
+
+    /* Tile-mode detection from the data size, on every KAT case. */
+    for (size_t i = 0; i < k_kat_case_count; ++i) {
+        const kat_case &c = k_kat_cases[i];
+        texc_ps5_tile_mode tm = TEXC_PS5_TILE_DEFAULT;
+        int rc = texc_ps5_detect_tile_mode(c.format, c.w, c.h, c.mips, c.slices,
+                                           k_ps5_kat[i].surface_size, &tm);
+        /* 256B and 4KB single-mip sizes can coincide; 4KB wins then. */
+        const bool ambiguous = c.tile_mode == TEXC_PS5_TILE_STANDARD_256B &&
+                               tm == TEXC_PS5_TILE_STANDARD_4KB;
+        CHECK(rc == TEXC_OK && ((uint32_t)tm == c.tile_mode || ambiguous),
+              "kat[%zu]: detect_tile_mode -> %d (rc=%d), expected %u", i, (int)tm,
+              rc, c.tile_mode);
+        CHECK(texc_ps5_detect_tile_mode(c.format, c.w, c.h, c.mips, c.slices,
+                                        k_ps5_kat[i].surface_size + 1, &tm) ==
+                  TEXC_ERR_BAD_DATA,
+              "kat[%zu]: detect_tile_mode accepted a wrong size", i);
+    }
+    CHECK(texc_ps5_default_tile_mode(TEXC_FORMAT_BC7, 256, 256) ==
+                  TEXC_PS5_TILE_STANDARD_4KB &&
+              texc_ps5_default_tile_mode(TEXC_FORMAT_BC7, 1024, 128) ==
+                  TEXC_PS5_TILE_STANDARD_64KB &&
+              texc_ps5_default_tile_mode(TEXC_FORMAT_BC1, 512, 256) ==
+                  TEXC_PS5_TILE_STANDARD_4KB,
+          "default tile mode heuristic");
+
+    /* Errors. */
+    {
+        texc_surface_layout lay;
+        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 64, 64,
+                                      8, 1, 0, &lay) == TEXC_ERR_INVALID_ARG,
+              "too many mips accepted");
+        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 64, 64,
+                                      1, 1, TEXC_PS5_TILE_LEGACY, &lay) ==
+                  TEXC_ERR_UNSUPPORTED,
+              "legacy mode has no chain layout");
+        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 64, 64,
+                                      1, 1, 3, &lay) == TEXC_ERR_UNSUPPORTED,
+              "unknown PS5 tile mode accepted");
+        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_BC7, 64,
+                                      64, 1, 1, 0, &lay) == TEXC_ERR_UNSUPPORTED,
+              "Switch chain layout unexpectedly supported");
+        CHECK(texc_swizzled_size(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 64, 64, 3) == 0,
+              "swizzled_size with bad tile mode");
+    }
+
+    /* Real content when available (see tools/ps5_oracle/README.md). */
+    size_t found = 0;
+    for (const ps5_sample_kat &s : k_ps5_samples) {
+        const char *dirs[] = { "samples/ps5/textures/", "../samples/ps5/textures/",
+                               "../../samples/ps5/textures/" };
+        FILE *f = nullptr;
+        for (const char *d : dirs) {
+            char path[512];
+            snprintf(path, sizeof path, "%s%s", d, s.file);
+            f = fopen(path, "rb");
+            if (f) break;
+        }
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long len = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        std::vector<uint8_t> file(len > 0 ? (size_t)len : 0);
+        if (!file.empty() && fread(file.data(), 1, file.size(), f) != file.size())
+            file.clear();
+        fclose(f);
+        if (file.size() < s.data_offset + s.data_size) continue;
+        std::vector<uint8_t> surf(file.begin() + s.data_offset,
+                                  file.begin() + s.data_offset + (size_t)s.data_size);
+        /* G1T has no tile-mode field: recover it from the data size. */
+        texc_ps5_tile_mode tm = TEXC_PS5_TILE_DEFAULT;
+        int rc = texc_ps5_detect_tile_mode(s.format, s.w, s.h, s.mips, 1,
+                                           s.data_size, &tm);
+        CHECK(rc == TEXC_OK && (uint32_t)tm == s.tile_mode,
+              "%s: detected tile mode %d (rc=%d), SDK says %u", s.file, (int)tm,
+              rc, s.tile_mode);
+        CHECK(texc_ps5_default_tile_mode(s.format, s.w, s.h) == (texc_ps5_tile_mode)s.tile_mode,
+              "%s: default-tile-mode heuristic predicts %d, actual %u", s.file,
+              (int)texc_ps5_default_tile_mode(s.format, s.w, s.h), s.tile_mode);
+        texc_surface_layout lay;
+        rc = texc_get_surface_layout(TEXC_SWIZZLE_PS5, s.format, s.w, s.h,
+                                     s.mips, 1, s.tile_mode, &lay);
+        CHECK(rc == TEXC_OK && lay.total_size == s.data_size,
+              "%s: layout %llu != file data %llu", s.file,
+              (unsigned long long)lay.total_size, (unsigned long long)s.data_size);
+        if (rc != TEXC_OK || lay.total_size != s.data_size) continue;
+        const uint64_t hsh = hash_mips(lay, TEXC_SWIZZLE_PS5, s.format, s.w, s.h,
+                                       s.tile_mode, surf, s.file, nullptr);
+        CHECK(hsh == s.hash, "%s: hash %016llx != SDK %016llx", s.file,
+              (unsigned long long)hsh, (unsigned long long)s.hash);
+        ++found;
+    }
+    if (found)
+        printf("  PS5 samples: %zu G1T textures match the SDK detile\n", found);
+    else
+        printf("  (samples/ps5/textures not found from cwd; skipped)\n");
+}
+
 static void test_error_paths(void) {
     uint8_t buf[64] = {0};
     CHECK(texc_decode(TEXC_FORMAT_BC1, nullptr, 0, 4, 4, buf, 64) ==
@@ -951,6 +1152,14 @@ int main(void) {
     test_pica_etc1();
     test_vita_raw();
     test_wii();
+    test_ps5_layout();
+    /* the pre-1.6 PS5 layout stays reachable and invertible */
+    test_swizzle_roundtrip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 256, 128,
+                           TEXC_PS5_TILE_LEGACY);
+    test_swizzle_roundtrip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC1, 64, 64,
+                           TEXC_PS5_TILE_STANDARD_64KB);
+    test_swizzle_roundtrip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_RGBA8, 37, 23,
+                           TEXC_PS5_TILE_STANDARD_256B);
 
     printf("\n[5/6] version + error paths\n");
     test_version();

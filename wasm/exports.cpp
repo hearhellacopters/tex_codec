@@ -162,6 +162,37 @@ TEXC_API uint8_t *texc_swizzle_alloc(texc_swizzle_mode mode,
     return dst;
 }
 
+/* Extract one mip of a whole tiled surface (mip chain x slices) to a
+ * freshly allocated linear buffer; *out_size receives the byte count.
+ * texc_get_surface_layout / texc_reswizzle_mip are exported as-is (the
+ * wrapper reads the layout struct from WASM memory and reswizzles in
+ * place). */
+TEXC_API uint8_t *texc_unswizzle_mip_alloc(texc_swizzle_mode mode,
+                                           texc_format format,
+                                           const uint8_t *surface,
+                                           size_t surface_size,
+                                           uint32_t width, uint32_t height,
+                                           uint32_t mip_count,
+                                           uint32_t slice_count,
+                                           uint32_t arg, uint32_t mip,
+                                           uint32_t slice, size_t *out_size) {
+    texc_surface_layout lay;
+    g_last_error = texc_get_surface_layout(mode, format, width, height,
+                                           mip_count, slice_count, arg, &lay);
+    if (g_last_error != TEXC_OK) return NULL;
+    if (mip >= lay.mip_count) { g_last_error = TEXC_ERR_INVALID_ARG; return NULL; }
+    size_t need = (size_t)lay.mips[mip].width * lay.mips[mip].height *
+                  lay.element_bytes;
+    uint8_t *dst = (uint8_t *)malloc(need ? need : 1);
+    if (!dst) { g_last_error = TEXC_ERR_OUT_OF_MEMORY; return NULL; }
+    g_last_error = texc_unswizzle_mip(mode, format, width, height, mip_count,
+                                      slice_count, arg, mip, slice,
+                                      surface, surface_size, dst, need);
+    if (g_last_error != TEXC_OK) { free(dst); return NULL; }
+    if (out_size) *out_size = need;
+    return dst;
+}
+
 /* ------------------------------------------------- per-format wrappers */
 
 #define TEXC_DEF_FORMAT(suffix, FMT)                                          \

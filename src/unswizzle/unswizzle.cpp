@@ -10,7 +10,8 @@
  *   - PS Vita morton order:  xdanieldzd/GXTConvert
  *   - X360 (Xenos) tiling:   bartlomiejduda/ReverseBox
  *   - Wii U GX2 addrlib:     KillzXGaming/Switch-Toolbox (see gx2_addrlib.cpp)
- *   - PS5 layout:            id-daemon RawTex Cooker
+ *   - PS5 legacy layout:     id-daemon RawTex Cooker (real layout: see
+ *                            ps5_agc.cpp, after AMD addrlib)
  *   - Switch GOB sizing:     "Nintendo Switch Size Code" in ref/G1T.h
  *
  * Conventions used throughout:
@@ -28,6 +29,7 @@
 
 #include "unswizzle.h"
 #include "gx2_addrlib.h"
+#include "ps5_agc.h"
 
 #include <string.h>
 
@@ -442,10 +444,13 @@ int convert_vita_bc(const Grid &g,
 }
 
 /* ------------------------------------------------------------- PS5 ----- */
-/* Port of UnswizzlePS5 / PS5morton (source id-daemon RawTex Cooker).
- * The tiled data is a sequential stream: 128x128-element macro tiles for
- * raw formats, 64x64-block macro tiles for block formats, each filled in
- * the nested morton/sub-tile order below. */
+/* The real PS5 layout (AMD GFX10 standard swizzle, block raster + mip
+ * tail) lives in ps5_agc.cpp. What follows is the pre-1.6 layout, kept
+ * reachable as TEXC_PS5_TILE_LEGACY: a port of UnswizzlePS5 / PS5morton
+ * (source id-daemon RawTex Cooker). The tiled data is a sequential stream:
+ * 128x128-element macro tiles for raw formats, 64x64-block macro tiles for
+ * block formats, each filled in the nested morton/sub-tile order below.
+ * For 16-byte and 4-byte elements this happens to equal STANDARD_64KB. */
 int ps5_morton(int t, int sx, int sy)
 {
     int xw = 1, yw = 1;
@@ -467,7 +472,7 @@ int ps5_morton(int t, int sx, int sy)
     return y * sx + x;
 }
 
-uint64_t ps5_tiled_size(const Grid &g)
+uint64_t ps5_legacy_tiled_size(const Grid &g)
 {
     if (g.bw == 1) {
         const uint64_t tx = (g.ew + 127) / 128, ty = (g.eh + 127) / 128;
@@ -479,11 +484,11 @@ uint64_t ps5_tiled_size(const Grid &g)
     return tx * ty * 4096ull * g.eb;
 }
 
-int convert_ps5(const Grid &g,
-                const uint8_t *src, size_t src_size,
-                uint8_t *dst, size_t dst_size, bool to_linear)
+int convert_ps5_legacy(const Grid &g,
+                       const uint8_t *src, size_t src_size,
+                       uint8_t *dst, size_t dst_size, bool to_linear)
 {
-    const uint64_t tiled_size = ps5_tiled_size(g);
+    const uint64_t tiled_size = ps5_legacy_tiled_size(g);
     const uint64_t lin_size = (uint64_t)g.ew * g.eh * g.eb;
     if (tiled_size == 0)
         return TEXC_ERR_UNSUPPORTED;
@@ -660,8 +665,15 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
     case TEXC_SWIZZLE_3DS:
         return (uint64_t)align_up(g.ew, 8) * align_up(g.eh, 8) * g.eb;
 
-    case TEXC_SWIZZLE_PS5:
-        return ps5_tiled_size(g);
+    case TEXC_SWIZZLE_PS5: {
+        if (arg == TEXC_PS5_TILE_LEGACY)
+            return ps5_legacy_tiled_size(g);
+        texc_surface_layout lay;
+        if (ps5::surface_layout(w, h, g.bw, g.bh, g.eb, 1, 1, arg, &lay) !=
+            TEXC_OK)
+            return 0;
+        return lay.total_size;
+    }
 
     case TEXC_SWIZZLE_SWITCH: {
         uint32_t bh = 0;
@@ -799,8 +811,18 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
                        });
     }
 
-    case TEXC_SWIZZLE_PS5:
-        return convert_ps5(g, src, src_size, dst, dst_size, dir_to_linear);
+    case TEXC_SWIZZLE_PS5: {
+        if (arg == TEXC_PS5_TILE_LEGACY)
+            return convert_ps5_legacy(g, src, src_size, dst, dst_size,
+                                      dir_to_linear);
+        texc_surface_layout lay;
+        const int rc = ps5::surface_layout(width, height, g.bw, g.bh, g.eb,
+                                           1, 1, arg, &lay);
+        if (rc != TEXC_OK)
+            return rc;
+        return ps5::convert_mip(lay, arg, 0, 0, src, src_size, dst, dst_size,
+                                dir_to_linear, true);
+    }
 
     case TEXC_SWIZZLE_SWITCH: {
         uint32_t bh = 0;
@@ -859,6 +881,97 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
     default:
         return TEXC_ERR_UNSUPPORTED;
     }
+}
+
+/* ------------------------------------------------- mip-chain surfaces --- */
+
+namespace {
+
+/* TEXC_SWIZZLE_NONE: mips back to back, mip 0 first, no padding. */
+int layout_linear(const Grid &g, uint32_t w, uint32_t h,
+                  uint32_t mips, uint32_t slices, texc_surface_layout *out)
+{
+    if (mips > TEXC_MAX_MIPS)
+        return TEXC_ERR_INVALID_ARG;
+    memset(out, 0, sizeof *out);
+    out->mip_count = mips;
+    out->slice_count = slices;
+    out->first_mip_in_tail = mips;
+    out->block_width = out->block_height = 1;
+    out->block_bytes = out->element_bytes = g.eb;
+    uint64_t off = 0;
+    for (uint32_t m = 0; m < mips; ++m) {
+        texc_mip_layout &mi = out->mips[m];
+        const uint32_t mw = (w >> m) ? (w >> m) : 1;
+        const uint32_t mh = (h >> m) ? (h >> m) : 1;
+        mi.width = mi.padded_width = (mw + g.bw - 1) / g.bw;
+        mi.height = mi.padded_height = (mh + g.bh - 1) / g.bh;
+        mi.offset = off;
+        mi.size = (uint64_t)mi.width * mi.height * g.eb;
+        off += mi.size;
+    }
+    out->slice_size = off;
+    out->total_size = off * slices;
+    return TEXC_OK;
+}
+
+} /* namespace */
+
+int surface_layout(texc_swizzle_mode mode, texc_format fmt,
+                   uint32_t width, uint32_t height,
+                   uint32_t mips, uint32_t slices, uint32_t arg,
+                   texc_surface_layout *out)
+{
+    Grid g;
+    if (!out || !get_grid(fmt, width, height, &g) || !mips || !slices)
+        return TEXC_ERR_INVALID_ARG;
+    switch (mode) {
+    case TEXC_SWIZZLE_NONE:
+        return layout_linear(g, width, height, mips, slices, out);
+    case TEXC_SWIZZLE_PS5:
+        if (arg == TEXC_PS5_TILE_LEGACY)
+            return TEXC_ERR_UNSUPPORTED;
+        return ps5::surface_layout(width, height, g.bw, g.bh, g.eb,
+                                   mips, slices, arg, out);
+    default:
+        return TEXC_ERR_UNSUPPORTED;
+    }
+}
+
+int convert_mip(texc_swizzle_mode mode, texc_format fmt,
+                uint32_t width, uint32_t height,
+                uint32_t mips, uint32_t slices, uint32_t arg,
+                uint32_t mip, uint32_t slice,
+                const uint8_t *src, size_t src_size,
+                uint8_t *dst, size_t dst_size, bool dir_to_linear)
+{
+    texc_surface_layout lay;
+    const int rc = surface_layout(mode, fmt, width, height, mips, slices,
+                                  arg, &lay);
+    if (rc != TEXC_OK)
+        return rc;
+    if (mip >= lay.mip_count || slice >= lay.slice_count)
+        return TEXC_ERR_INVALID_ARG;
+
+    if (mode == TEXC_SWIZZLE_PS5)
+        return ps5::convert_mip(lay, arg, mip, slice, src, src_size,
+                                dst, dst_size, dir_to_linear, false);
+
+    /* NONE: a plain copy at the mip's offset. */
+    const texc_mip_layout &mi = lay.mips[mip];
+    const uint64_t off = (uint64_t)slice * lay.slice_size + mi.offset;
+    if (lay.total_size > (uint64_t)SIZE_MAX || mi.size > (uint64_t)SIZE_MAX)
+        return TEXC_ERR_INVALID_ARG;
+    if (dir_to_linear) {
+        if (src_size < lay.total_size || dst_size < mi.size)
+            return TEXC_ERR_BUFFER_TOO_SMALL;
+        memcpy(dst, src + (size_t)off, (size_t)mi.size);
+    } else {
+        if (src_size < mi.size || dst_size < lay.total_size)
+            return TEXC_ERR_BUFFER_TOO_SMALL;
+        memcpy(dst + (size_t)off, src, (size_t)mi.size);
+    }
+    return TEXC_OK;
 }
 
 } /* namespace texc */

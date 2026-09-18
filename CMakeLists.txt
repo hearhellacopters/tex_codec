@@ -110,6 +110,8 @@ if(EMSCRIPTEN)
         _texc_decode _texc_decode_f32 _texc_encode _texc_encode_ex
         _texc_encode_f32 _texc_swizzled_size _texc_unswizzled_size _texc_unswizzle _texc_swizzle
         _texc_reswizzle _texc_decode_swizzled
+        _texc_get_surface_layout _texc_unswizzle_mip _texc_reswizzle_mip
+        _texc_ps5_detect_tile_mode _texc_ps5_default_tile_mode
         _texc_profile_name _texc_profile_bytes_per_pixel _texc_convert_profile
         _texc_flip_y _texc_flip_x _texc_crop
         _texc_alloc _texc_free _malloc _free

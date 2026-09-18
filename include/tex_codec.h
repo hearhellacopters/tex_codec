@@ -49,7 +49,7 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 5
+#define TEXC_VERSION_MINOR 6
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
@@ -339,7 +339,8 @@ TEXC_API int texc_encode_f32(texc_format format,
 typedef enum texc_swizzle_mode {
     TEXC_SWIZZLE_NONE = 0,        /* memcpy                                  */
     TEXC_SWIZZLE_PS4,             /* Orbis/GNF 8x8-micro-tile Morton         */
-    TEXC_SWIZZLE_PS5,             /* Prospero variant                        */
+    TEXC_SWIZZLE_PS5,             /* Prospero Agc / GFX10 block tiling
+                                   * (see texc_ps5_tile_mode + `arg`)        */
     TEXC_SWIZZLE_SWITCH,          /* Tegra X1 block-linear GOB (see `arg`)   */
     TEXC_SWIZZLE_PSVITA,          /* GXM Morton / Z-order                    */
     TEXC_SWIZZLE_X360,            /* Xenos macro tiling                      */
@@ -349,6 +350,28 @@ typedef enum texc_swizzle_mode {
     TEXC_SWIZZLE_DX12_64KB,       /* D3D12 64KB standard swizzle             */
     TEXC_SWIZZLE_MODE_COUNT
 } texc_swizzle_mode;
+
+/* PS5 (Prospero) tile modes, passed as `arg` for TEXC_SWIZZLE_PS5.
+ *
+ * The PS5 GPU is AMD GFX10-class; textures are a row-major raster of
+ * fixed-size blocks (256 B, 4 KB or 64 KB) whose interior uses AMD's
+ * "standard" (SW_*_S) address swizzle. Values below match Sony's
+ * sce::AgcGpuAddress::TileMode numbering so a value read from a container
+ * header can be passed straight through.
+ *
+ * 0 selects STANDARD_4KB, the default for sampled textures in Sony's own
+ * texture tool and what every known G1T PS5 texture uses. LEGACY keeps the
+ * pre-1.6 layout (id-daemon RawTex Cooker port) reachable; it coincides
+ * with STANDARD_64KB for 16-byte blocks (BC2/3/5/6/7, ASTC) and 32bpp raw
+ * data but is not a real hardware mode for other element sizes, and it has
+ * no mip-chain layout. */
+typedef enum texc_ps5_tile_mode {
+    TEXC_PS5_TILE_DEFAULT       = 0,     /* = STANDARD_4KB                  */
+    TEXC_PS5_TILE_STANDARD_256B = 1,     /* kStandard256B: 256 B blocks     */
+    TEXC_PS5_TILE_STANDARD_4KB  = 5,     /* kStandard4KB:  4 KB blocks      */
+    TEXC_PS5_TILE_STANDARD_64KB = 9,     /* kStandard64KB: 64 KB blocks     */
+    TEXC_PS5_TILE_LEGACY        = 0x100  /* tex_codec <= 1.5 behaviour      */
+} texc_ps5_tile_mode;
 
 /* Size in bytes of the swizzled representation (may exceed the linear size
  * because of tile padding). 0 if invalid.
@@ -375,6 +398,10 @@ TEXC_API size_t texc_unswizzled_size(texc_swizzle_mode mode,
  * `arg` per mode:
  *   SWITCH     : log2 of block height in GOBs (0..5); pass 0xFFFFFFFF to
  *                auto-select from the mip height like the hardware does.
+ *   PS5        : a texc_ps5_tile_mode (0 = STANDARD_4KB). For a single
+ *                mip the tiled buffer is the block-padded raster
+ *                (texc_swizzled_size); for a whole mip chain see
+ *                texc_get_surface_layout / texc_unswizzle_mip.
  *   WIIU       : GX2 swizzle value from the texture header (usually 0).
  *   X360       : texel pitch override in bytes, or 0 for default.
  *   PSVITA     : for RAW (non-block) formats, bytes per pixel, or 0 to use
@@ -421,6 +448,103 @@ TEXC_API int texc_decode_swizzled(texc_swizzle_mode mode, texc_format format,
                                   const uint8_t *src, size_t src_size,
                                   uint8_t *dst, size_t dst_size,
                                   uint32_t arg);
+
+/* ------------------------------------------------- mip-chain surfaces --- */
+/* Some platforms store a whole mip chain (and every array slice / cube
+ * face) as ONE tiled surface with platform-defined padding, packing and
+ * ordering, so the offset of a given mip cannot be derived from the linear
+ * sizes. texc_get_surface_layout describes that surface and
+ * texc_unswizzle_mip / texc_reswizzle_mip address a single mip inside it.
+ *
+ * Currently implemented for TEXC_SWIZZLE_PS5 (STANDARD_256B / 4KB / 64KB)
+ * and TEXC_SWIZZLE_NONE (mips stored back to back, mip 0 first). Other
+ * modes return TEXC_ERR_UNSUPPORTED.
+ *
+ * PS5 layout (AMD GFX10 "standard" swizzle, as computed by Sony's
+ * AgcGpuAddress library): within one slice the smallest mips that fit in
+ * half a block share a single "mip tail" block stored FIRST, then the
+ * remaining mips follow in DESCENDING order, so mip 0 is LAST. Slices
+ * (array layers, cube faces) repeat the whole chain. Element = compressed
+ * block for block formats, pixel for raw formats. */
+
+#define TEXC_MAX_MIPS 16
+
+typedef struct texc_mip_layout {
+    uint32_t width, height;                /* mip size in ELEMENTS          */
+    uint32_t padded_width, padded_height;  /* block-padded, in elements     */
+    uint64_t offset;                       /* byte offset within one slice
+                                            * of the mip's first block (for
+                                            * a tail mip: of the tail block)*/
+    uint64_t size;                         /* bytes of blocks holding it    */
+    uint32_t in_tail;                      /* 1 = packed in the mip tail    */
+    uint32_t tail_x, tail_y;               /* element position in the tail */
+} texc_mip_layout;
+
+typedef struct texc_surface_layout {
+    uint32_t mip_count, slice_count;
+    uint32_t first_mip_in_tail;            /* == mip_count when no tail     */
+    uint32_t block_width, block_height;    /* tiling block, in elements     */
+    uint32_t block_bytes;
+    uint32_t element_bytes;
+    uint64_t slice_size;                   /* bytes per slice (all mips)    */
+    uint64_t total_size;                   /* slice_size * slice_count      */
+    texc_mip_layout mips[TEXC_MAX_MIPS];
+} texc_surface_layout;
+
+/* PS5 tile-mode detection. G1T carries no tile-mode field, and Koei Tecmo
+ * content mixes STANDARD_4KB (small textures) and STANDARD_64KB (large
+ * ones), but the whole-surface size differs per mode, so the mode can be
+ * recovered from the texture's data size: this returns the standard mode
+ * whose texc_get_surface_layout().total_size equals `data_size` exactly
+ * (4KB, then 64KB, then 256B are tried). TEXC_ERR_BAD_DATA if none fits.
+ * `data_size` is the whole mip chain x slices as stored in the container. */
+TEXC_API int texc_ps5_detect_tile_mode(texc_format format,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t mip_count, uint32_t slice_count,
+                                       uint64_t data_size,
+                                       texc_ps5_tile_mode *out_mode);
+
+/* The tile mode Koei Tecmo's PS5 pipeline is observed to pick when writing
+ * a texture: STANDARD_64KB when mip 0 is larger than 64 KB, STANDARD_4KB
+ * otherwise. Every sample seen so far follows this; treat it as a
+ * heuristic for the write path and prefer texc_ps5_detect_tile_mode when
+ * reading. Returns TEXC_PS5_TILE_STANDARD_4KB for invalid input. */
+TEXC_API texc_ps5_tile_mode texc_ps5_default_tile_mode(texc_format format,
+                                                       uint32_t width,
+                                                       uint32_t height);
+
+/* Describe the tiled surface holding `mip_count` mips x `slice_count`
+ * slices of a width x height (pixels, mip 0) texture. `arg` as for
+ * texc_unswizzle. total_size is the byte count of the whole surface. */
+TEXC_API int texc_get_surface_layout(texc_swizzle_mode mode,
+                                     texc_format format,
+                                     uint32_t width, uint32_t height,
+                                     uint32_t mip_count, uint32_t slice_count,
+                                     uint32_t arg,
+                                     texc_surface_layout *out);
+
+/* Extract mip `mip` of slice `slice` from a whole tiled surface
+ * (`surface` holds layout.total_size bytes) into linear row-major block
+ * order. dst receives layout.mips[mip].width * height * element_bytes
+ * bytes, i.e. texc_encoded_size(format, max(1, width >> mip),
+ * max(1, height >> mip)) for block formats. */
+TEXC_API int texc_unswizzle_mip(texc_swizzle_mode mode, texc_format format,
+                                uint32_t width, uint32_t height,
+                                uint32_t mip_count, uint32_t slice_count,
+                                uint32_t arg, uint32_t mip, uint32_t slice,
+                                const uint8_t *surface, size_t surface_size,
+                                uint8_t *dst, size_t dst_size);
+
+/* Inverse: write linear mip data into its place inside a whole tiled
+ * surface. Only that mip's elements are touched, so build a surface by
+ * zero-filling layout.total_size bytes and calling this once per mip and
+ * slice. */
+TEXC_API int texc_reswizzle_mip(texc_swizzle_mode mode, texc_format format,
+                                uint32_t width, uint32_t height,
+                                uint32_t mip_count, uint32_t slice_count,
+                                uint32_t arg, uint32_t mip, uint32_t slice,
+                                const uint8_t *src, size_t src_size,
+                                uint8_t *surface, size_t surface_size);
 
 /* ------------------------------------------------------- image utilities */
 /* Colour profile conversion and flip/crop, modelled on tex-decoder's
