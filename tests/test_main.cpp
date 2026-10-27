@@ -15,6 +15,7 @@
 #include "../include/tex_codec.h"
 #include "../tools/ps5_oracle/kat_common.h"
 #include "ps5_kat.h"
+#include "switch2_kat.h"
 
 static int g_failures = 0;
 
@@ -1043,6 +1044,69 @@ static void test_ps5_layout(void) {
         printf("  (samples/ps5/textures not found from cwd; skipped)\n");
 }
 
+/* Switch vs Switch 2 (Orin): same GOB raster and sizes, two address bits
+ * swapped inside each 64-byte x 8-row GOB. One RGBA8 GOB (16x8 pixels,
+ * block height 1): pixel (x, y) starts at byte xb = 4x of row y, and its
+ * tiled offset is the GOB pattern below (from tegra_swizzle's
+ * deswizzle_inner, with and without isOrin). The hash cases were produced
+ * by tegra_swizzle_x64.dll's swizzle_block_linear. */
+static uint32_t ref_gob(uint32_t xb, uint32_t y, bool orin) {
+    return orin ? ((xb % 64) / 32) * 256 + ((y % 8) / 4) * 128 +
+                      ((xb % 32) / 16) * 64 + (y % 4) * 16 + (xb % 16)
+                : ((xb % 64) / 32) * 256 + ((y % 8) / 2) * 64 +
+                      ((xb % 32) / 16) * 32 + (y % 2) * 16 + (xb % 16);
+}
+
+static void test_switch2(void) {
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool orin = pass == 1;
+        const texc_swizzle_mode m = orin ? TEXC_SWIZZLE_SWITCH2
+                                         : TEXC_SWIZZLE_SWITCH;
+        CHECK(texc_swizzled_size(m, TEXC_FORMAT_RGBA8, 16, 8, 0) == 512,
+              "%s: one GOB", orin ? "SWITCH2" : "SWITCH");
+        std::vector<uint8_t> lin(512), tiled(512, 0);
+        for (uint32_t i = 0; i < 512; ++i) lin[i] = (uint8_t)(i * 7 + 3);
+        int rc = texc_reswizzle(m, TEXC_FORMAT_RGBA8, 16, 8, lin.data(), 512,
+                                tiled.data(), 512, 0);
+        CHECK(rc == TEXC_OK, "reswizzle rc=%d", rc);
+        bool ok = true;
+        for (uint32_t y = 0; y < 8; ++y)
+            for (uint32_t xb = 0; xb < 64; ++xb)
+                if (tiled[ref_gob(xb, y, orin)] != lin[y * 64 + xb]) ok = false;
+        CHECK(ok, "%s GOB byte order", orin ? "SWITCH2" : "SWITCH");
+    }
+    /* The two modes must agree on sizes everywhere and differ in content. */
+    const uint32_t dims[][2] = { {64, 64}, {256, 128}, {37, 23}, {1024, 16} };
+    for (auto &d : dims)
+        for (uint32_t arg : { 0xFFFFFFFFu, 0u, 3u }) {
+            CHECK(texc_swizzled_size(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_BC7,
+                                     d[0], d[1], arg) ==
+                      texc_swizzled_size(TEXC_SWIZZLE_SWITCH2, TEXC_FORMAT_BC7,
+                                         d[0], d[1], arg),
+                  "SWITCH/SWITCH2 sizes differ for %ux%u arg %u", d[0], d[1],
+                  arg);
+        }
+    for (const switch2_kat &k : k_switch2_kat) {
+        const size_t lin = texc_encoded_size(k.format, k.w, k.h);
+        const size_t ts = texc_swizzled_size(k.mode, k.format, k.w, k.h, k.arg);
+        CHECK(ts == k.tiled_size, "switch kat %s %ux%u mode %d: size %zu != %zu",
+              texc_format_name(k.format), k.w, k.h, (int)k.mode, ts,
+              (size_t)k.tiled_size);
+        if (ts != k.tiled_size) continue;
+        std::vector<uint8_t> src(lin), tiled(ts, 0);
+        kat_fill(src.data(), src.size(), k.seed);
+        int rc = texc_reswizzle(k.mode, k.format, k.w, k.h, src.data(), lin,
+                                tiled.data(), ts, k.arg);
+        const uint64_t h = kat_fnv(kat_fnv_init(), tiled.data(), ts);
+        CHECK(rc == TEXC_OK && h == k.hash,
+              "switch kat %s %ux%u mode %d arg %u: hash %016llx != DLL %016llx",
+              texc_format_name(k.format), k.w, k.h, (int)k.mode, k.arg,
+              (unsigned long long)h, (unsigned long long)k.hash);
+    }
+    printf("  Switch / Switch 2 GOB checks done (%zu DLL cases)\n",
+           sizeof(k_switch2_kat) / sizeof(k_switch2_kat[0]));
+}
+
 static void test_error_paths(void) {
     uint8_t buf[64] = {0};
     CHECK(texc_decode(TEXC_FORMAT_BC1, nullptr, 0, 4, 4, buf, 64) ==
@@ -1117,16 +1181,18 @@ int main(void) {
         TEXC_SWIZZLE_NONE, TEXC_SWIZZLE_PS4, TEXC_SWIZZLE_PS5,
         TEXC_SWIZZLE_SWITCH, TEXC_SWIZZLE_PSVITA, TEXC_SWIZZLE_X360,
         TEXC_SWIZZLE_PSP, TEXC_SWIZZLE_3DS, TEXC_SWIZZLE_WIIU,
-        TEXC_SWIZZLE_DX12_64KB,
+        TEXC_SWIZZLE_DX12_64KB, TEXC_SWIZZLE_SWITCH2,
     };
     const texc_format swz_fmts[] = { TEXC_FORMAT_BC1, TEXC_FORMAT_BC7,
                                      TEXC_FORMAT_RGBA8 };
     for (texc_swizzle_mode m : modes)
         for (texc_format f : swz_fmts) {
-            test_swizzle_roundtrip(m, f, 64, 64, m == TEXC_SWIZZLE_SWITCH ?
-                                   0xFFFFFFFFu : 0);
-            test_swizzle_roundtrip(m, f, 256, 128, m == TEXC_SWIZZLE_SWITCH ?
-                                   0xFFFFFFFFu : 0);
+            const bool gob = m == TEXC_SWIZZLE_SWITCH ||
+                             m == TEXC_SWIZZLE_SWITCH2;
+            test_swizzle_roundtrip(m, f, 64, 64, gob ? 0xFFFFFFFFu : 0);
+            test_swizzle_roundtrip(m, f, 256, 128, gob ? 0xFFFFFFFFu : 0);
+            if (gob)   /* odd sizes: GOB modes pad, so they stay invertible */
+                test_swizzle_roundtrip(m, f, 37, 23, 0xFFFFFFFFu);
         }
     printf("  swizzle identity checks done\n");
 
@@ -1153,6 +1219,7 @@ int main(void) {
     test_vita_raw();
     test_wii();
     test_ps5_layout();
+    test_switch2();
     /* the pre-1.6 PS5 layout stays reachable and invertible */
     test_swizzle_roundtrip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 256, 128,
                            TEXC_PS5_TILE_LEGACY);

@@ -150,7 +150,8 @@ the test suite. Supported layouts:
 |---|---|
 | `TEXC_SWIZZLE_PS4` | Orbis 8x8 micro-tile Morton |
 | `TEXC_SWIZZLE_PS5` | Prospero / AMD GFX10 block tiling (`arg` = `texc_ps5_tile_mode`, 0 = standard 4 KB blocks); whole mip chains via the surface-layout API below |
-| `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto) |
+| `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto); G1T platform `0x10` |
+| `TEXC_SWIZZLE_SWITCH2` | Switch 2 / NVIDIA Orin block-linear GOBs, same `arg` and sizes as `SWITCH`; G1T platform `0x18` |
 | `TEXC_SWIZZLE_PSVITA` | GXM: 32x32 pixel tiles for raw formats (`arg` = bytes per pixel, 0 = the format's own; G1T ships 8/16/24/32bpp raw Vita textures), Morton / Z-order for block formats |
 | `TEXC_SWIZZLE_X360` | Xenos macro tiling |
 | `TEXC_SWIZZLE_PSP` | 16-byte x 8-row tiles |
@@ -161,6 +162,24 @@ the test suite. Supported layouts:
 `texc_decode_swizzled` does unswizzle + decode in one call. Container
 parsing is intentionally left to the adopting project - this library 
 is the conversion core.
+
+**Switch 2 (Orin)** uses the same block-linear layout as the original
+Switch: the same 512-byte GOBs (64 bytes x 8 rows) stacked into blocks of
+`2^arg` GOBs, the same block-height rules and the same tiled sizes. The
+only difference is the byte order inside each GOB, where two address bits
+trade places:
+
+```text
+Tegra X1: ((x%64)/32)*256 + ((y%8)/2)*64  + ((x%32)/16)*32 + (y%2)*16 + x%16
+Orin:     ((x%64)/32)*256 + ((y%8)/4)*128 + ((x%32)/16)*64 + (y%4)*16 + x%16
+```
+
+(`x` = byte within the row, `y` = row within the GOB.) So any code that
+already handles a Switch G1T handles a Switch 2 one by passing
+`TEXC_SWIZZLE_SWITCH2` instead; in G1T the platform byte is `0x18` rather
+than `0x10`. Both patterns come from ScanMountGoat's `tegra_swizzle`
+(its `isOrin` path), and `tests/switch2_kat.h` holds known answers produced
+by that library for both GPUs.
 
 When you pass a non-zero `arg`, size the linear side with
 `texc_unswizzled_size(mode, format, w, h, arg)` rather than
@@ -367,6 +386,9 @@ file, so you can point it straight at texture data inside a container
 # decode BC7 data at an offset inside a container straight to PNG
 texc decode -i file.g1t --offset 0x1234 --size 0x8000 -f BC7 -w 256 -h 256 -o out.png
 
+# Switch 2 (G1T platform 0x18): same flags, mode switch2
+texc decode -i tex.bin -f BC7 -w 512 -h 512 --swizzle switch2 --arg auto -o out.png
+
 # Switch-swizzled ASTC: unswizzle + decode in one step ('auto' block height)
 texc decode -i tex.bin -f ASTC_8x8 -w 256 -h 256 --swizzle switch --arg auto -o out.tga
 
@@ -519,7 +541,7 @@ const tm = await tex.swizzler.detectPS5TileMode(TexFormat.BC7, 1024, 128, 6,
                                                 surface.byteLength);
 ```
 
-Mode names: `PS4, PS5, Switch, PSVita, X360, PSP, N3DS, WiiU, DX12_64KB`.
+Mode names: `PS4, PS5, Switch, Switch2, PSVita, X360, PSP, N3DS, WiiU, DX12_64KB`.
 `surfaceLayout` / `unswizzleMip` / `reswizzleMip` take `{ sliceCount,
 slice, arg }` options (`arg` = a `PS5TileMode` for PS5).
 
@@ -542,8 +564,8 @@ typed signatures:
 - **Per format** (all 45): `_texc_decode_bc7(src, srcSize, w, h, dst,
   dstSize)`, `_texc_encode_etc2_rgba8(..., alphaThreshold)`,
   `_texc_encoded_size_astc_12x12(w, h)`, …
-- **Per swizzle mode** (ps4, ps5, switch, psvita, x360, psp, n3ds, wiiu,
-  dx12_64kb): `_texc_unswizzle_ps4(fmt, w, h, src, srcSize, dst, dstSize,
+- **Per swizzle mode** (ps4, ps5, switch, switch2, psvita, x360, psp, n3ds,
+  wiiu, dx12_64kb): `_texc_unswizzle_ps4(fmt, w, h, src, srcSize, dst, dstSize,
   arg)` (tiled→linear), `_texc_reswizzle_switch(...)` (linear→tiled;
   `_texc_swizzle_<mode>` is its legacy alias), and
   `_texc_swizzled_size_wiiu(...)`.
@@ -577,6 +599,7 @@ tests/                   roundtrip + swizzle-identity test suite
 ## Credits / references
 
 - swizzle machinery credit: Piken / DwayneR, github.com/fdwr
+- Switch 2 (Orin) GOB layout: ScanMountGoat's tegra_swizzle
 - PS5 tiling: derived from AMD addrlib (MIT, GPUOpen-Drivers/pal,
   gfx10addrlib.cpp / gfx10SwizzlePattern.h); the pre-1.6 legacy layout is
   a port of id-daemon's RawTex Cooker

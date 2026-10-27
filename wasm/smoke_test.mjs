@@ -332,6 +332,31 @@ try {
   }
 }
 
+/* ---- Switch 2 (Orin) block-linear ---- */
+{
+  check(SwizzleMode.SWITCH2 === 10, "SwizzleMode.SWITCH2 === 10");
+  // One RGBA8 GOB (16x8 px, block height 1): bytes 16..31 of row 0 sit at
+  // GOB offset 32 on Tegra X1 and 64 on Orin; row 2 swaps the other way.
+  const lin = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) lin[i] = (i * 7 + 3) & 0xff;
+  const nx = await tex.swizzler.reswizzleSwitch(TexFormat.RGBA8, lin, 16, 8, 0);
+  const s2 = await tex.swizzler.reswizzleSwitch2(TexFormat.RGBA8, lin, 16, 8, 0);
+  check(nx[32] === lin[16] && nx[64] === lin[128] &&
+        s2[64] === lin[16] && s2[32] === lin[128],
+        "Switch vs Switch 2 GOB byte order");
+  const back = await tex.swizzler.unswizzleSwitch2(TexFormat.RGBA8, s2, 16, 8, 0);
+  check(back.every((b, i) => b === lin[i]), "Switch 2 reswizzle -> unswizzle identity");
+  const a = await tex.swizzler.swizzledSizeSwitch(TexFormat.BC7, 300, 70,
+                                                  SwitchBlockHeightAuto);
+  const b = await tex.swizzler.swizzledSizeSwitch2(TexFormat.BC7, 300, 70,
+                                                   SwitchBlockHeightAuto);
+  check(a === b && a > 0, `Switch and Switch 2 tiled sizes agree (${a})`);
+  check(typeof mod._texc_unswizzle_switch2 === "function" &&
+        typeof mod._texc_reswizzle_switch2 === "function" &&
+        typeof tex.decoder.decodeSwizzledSwitch2 === "function",
+        "Switch 2 per-mode exports and helpers present");
+}
+
 /* ---- PS5 whole-surface (mip chain) layout ---- */
 {
   check(PS5TileMode.STANDARD_4KB === 5 && PS5TileMode.LEGACY === 0x100,

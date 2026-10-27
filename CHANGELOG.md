@@ -15,6 +15,23 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.7.0] - 2026-10-27
+
+### Added
+- **Switch 2 (NVIDIA Orin) block-linear layout**: `TEXC_SWIZZLE_SWITCH2`
+  (G1T platform `0x18`). It shares everything with `TEXC_SWIZZLE_SWITCH`
+  except the byte order inside each 64-byte x 8-row GOB, where two address
+  bits are swapped: the same `arg` (block height log2 or `0xFFFFFFFF` for
+  auto), block-height rules and tiled sizes. Taken from the `isOrin` path
+  of ScanMountGoat's `tegra_swizzle`, and checked against that library in
+  `tests/switch2_kat.h` for both GPUs (24 cases over RGBA8, BC1, BC7 and
+  ASTC 8x8 at even and odd sizes).
+- WASM: `_texc_unswizzle_switch2`, `_texc_reswizzle_switch2`,
+  `_texc_swizzle_switch2`, `_texc_swizzled_size_switch2`. JS wrapper:
+  `SwizzleMode.SWITCH2` and the generated `unswizzleSwitch2`,
+  `reswizzleSwitch2`, `swizzledSizeSwitch2`, `decodeSwizzledSwitch2`
+  helpers, typed in the `.d.ts`. CLI: `-m switch2` (alias `orin`).
+
 ## [1.6.0] - 2026-09-17
 
 ### Changed

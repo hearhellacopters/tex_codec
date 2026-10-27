@@ -13,6 +13,7 @@
  *   - PS5 legacy layout:     id-daemon RawTex Cooker (real layout: see
  *                            ps5_agc.cpp, after AMD addrlib)
  *   - Switch GOB sizing:     "Nintendo Switch Size Code" in ref/G1T.h
+ *   - Switch 2 (Orin) GOB:   ScanMountGoat/tegra_swizzle (isOrin path)
  *
  * Conventions used throughout:
  *   - An "element" is one addressing unit of the layout: a compressed block
@@ -221,15 +222,26 @@ inline uint64_t map_d3d12_raw(uint32_t pw, uint32_t x, uint32_t y, uint32_t eb)
 /* 64-byte x 8-row GOBs stacked into blocks of `bh` GOBs. Matches
  * swizzled_mip_size() in ref/G1T.h and the layout consumed by
  * Image_UntileBlockLinearGOBs. xb = byte offset within the row of blocks. */
+/* Byte offset of (xb, y) inside one 512-byte GOB (64 bytes x 8 rows).
+ * Tegra X1:  bits 0-3 x0-3, 4 y0, 5 x4, 6 y1, 7 y2, 8 x5.
+ * Orin (Switch 2) swaps bits 5 and 6: 4 y0, 5 y1, 6 x4, 7 y2 - from the
+ * isOrin path of tegra_swizzle's deswizzle_inner (ScanMountGoat). */
+inline uint32_t gob_offset(uint32_t xb, uint32_t y, bool orin)
+{
+    if (orin)
+        return ((xb % 64) / 32) * 256 + ((y % 8) / 4) * 128 +
+               ((xb % 32) / 16) * 64 + (y % 4) * 16 + (xb % 16);
+    return ((xb % 64) / 32) * 256 + ((y % 8) / 2) * 64 +
+           ((xb % 32) / 16) * 32 + (y % 2) * 16 + (xb % 16);
+}
+
 inline uint64_t map_switch_gob(uint32_t width_gobs, uint32_t bh,
-                               uint32_t xb, uint32_t y)
+                               uint32_t xb, uint32_t y, bool orin)
 {
     uint64_t a = (uint64_t)(y / (8 * bh)) * 512ull * bh * width_gobs +
                  (uint64_t)(xb / 64) * 512ull * bh +
                  (uint64_t)((y % (8 * bh)) / 8) * 512;
-    a += ((xb % 64) / 32) * 256 + ((y % 8) / 2) * 64 +
-         ((xb % 32) / 16) * 32 + (y % 2) * 16 + (xb % 16);
-    return a;
+    return a + gob_offset(xb, y, orin);
 }
 
 /* Port of block_height_enum() / mip_block_height() from ref/G1T.h. */
@@ -675,7 +687,8 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
         return lay.total_size;
     }
 
-    case TEXC_SWIZZLE_SWITCH: {
+    case TEXC_SWIZZLE_SWITCH:
+    case TEXC_SWIZZLE_SWITCH2: {
         uint32_t bh = 0;
         if (!switch_block_height(g.eh, arg, &bh))
             return 0;
@@ -824,16 +837,19 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
                                 dir_to_linear, true);
     }
 
-    case TEXC_SWIZZLE_SWITCH: {
+    case TEXC_SWIZZLE_SWITCH:
+    case TEXC_SWIZZLE_SWITCH2: {
         uint32_t bh = 0;
         if (!switch_block_height(g.eh, arg, &bh))
             return TEXC_ERR_INVALID_ARG;
         const uint64_t ts = tiled_size_impl(mode, g, width, height, arg);
         const uint32_t width_gobs =
             (uint32_t)(((uint64_t)g.ew * g.eb + 63) / 64);
+        const bool orin = mode == TEXC_SWIZZLE_SWITCH2;
         return run_map(g, ts, src, src_size, dst, dst_size, dir_to_linear,
                        [&](uint32_t x, uint32_t y) {
-                           return map_switch_gob(width_gobs, bh, x * g.eb, y);
+                           return map_switch_gob(width_gobs, bh, x * g.eb, y,
+                                                 orin);
                        });
     }
 
@@ -1134,6 +1150,7 @@ int main()
         { TEXC_SWIZZLE_3DS,       "3DS",       0 },
         { TEXC_SWIZZLE_WIIU,      "WIIU",      0 },
         { TEXC_SWIZZLE_DX12_64KB, "DX12_64KB", 0 },
+        { TEXC_SWIZZLE_SWITCH2,   "SWITCH2",   0xFFFFFFFFu },
     };
     static const struct { texc_format f; const char *n; } fmts[] = {
         { TEXC_FORMAT_BC1,   "BC1"   },

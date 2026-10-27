@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.6.0";
+export const VERSION = "1.7.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -107,6 +107,10 @@ export const SwizzleMode = Object.freeze({
   WIIU: 8,
   /** Data of 64KB or less is stored linearly (pass-through). */
   DX12_64KB: 9,
+  /** Switch 2 (NVIDIA Orin) block-linear GOBs (G1T platform 0x18). Same
+   *  `arg`, block heights and sizes as SWITCH; only the byte order inside
+   *  each 64x8-byte GOB differs. */
+  SWITCH2: 10,
 });
 
 /**
@@ -1015,7 +1019,8 @@ for (const [name, fmt] of Object.entries(TexFormat)) {
 }
 
 const k_modeNames = Object.freeze({
-  PS4: "PS4", PS5: "PS5", SWITCH: "Switch", PSVITA: "PSVita", X360: "X360",
+  PS4: "PS4", PS5: "PS5", SWITCH: "Switch", SWITCH2: "Switch2",
+  PSVITA: "PSVita", X360: "X360",
   PSP: "PSP", N3DS: "N3DS", WIIU: "WiiU", DX12_64KB: "DX12_64KB",
 });
 

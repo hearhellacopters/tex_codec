@@ -255,6 +255,8 @@ static const mode_name k_modes[] = {
     { "ps4",       TEXC_SWIZZLE_PS4 },
     { "ps5",       TEXC_SWIZZLE_PS5 },
     { "switch",    TEXC_SWIZZLE_SWITCH },
+    { "switch2",   TEXC_SWIZZLE_SWITCH2 },
+    { "orin",      TEXC_SWIZZLE_SWITCH2 },
     { "psvita",    TEXC_SWIZZLE_PSVITA },
     { "vita",      TEXC_SWIZZLE_PSVITA },
     { "x360",      TEXC_SWIZZLE_X360 },
@@ -803,8 +805,8 @@ static void cmd_list(const std::string &what) {
                    texc_format_name((texc_format)f), bw, bh, bb);
         }
     } else if (what == "modes") {
-        printf("  none ps4 ps5 switch psvita x360 psp 3ds wiiu dx12_64kb\n"
-               "  (--arg: switch = block height log2 or 'auto';\n"
+        printf("  none ps4 ps5 switch switch2 psvita x360 psp 3ds wiiu dx12_64kb\n"
+               "  (--arg: switch / switch2 = block height log2 or 'auto';\n"
                "   ps5 = tile mode: 0/5 = standard 4KB, 1 = 256B,\n"
                "         9 = 64KB, 256 = legacy pre-1.6 layout, 'auto' =\n"
                "         detect from the data size (unswizzle) / Koei's\n"

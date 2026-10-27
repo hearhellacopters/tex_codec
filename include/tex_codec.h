@@ -49,7 +49,7 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 6
+#define TEXC_VERSION_MINOR 7
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
@@ -348,6 +348,9 @@ typedef enum texc_swizzle_mode {
     TEXC_SWIZZLE_3DS,             /* 8x8 Z-order tiles                       */
     TEXC_SWIZZLE_WIIU,            /* GX2 tiled (addrlib subset, see `arg`)   */
     TEXC_SWIZZLE_DX12_64KB,       /* D3D12 64KB standard swizzle             */
+    TEXC_SWIZZLE_SWITCH2,         /* Switch 2 (NVIDIA Orin) block-linear GOB;
+                                   * same `arg` and sizes as SWITCH, only the
+                                   * byte order inside a GOB differs        */
     TEXC_SWIZZLE_MODE_COUNT
 } texc_swizzle_mode;
 
@@ -396,8 +399,12 @@ TEXC_API size_t texc_unswizzled_size(texc_swizzle_mode mode,
  * texc_encoded_size() bytes.
  *
  * `arg` per mode:
- *   SWITCH     : log2 of block height in GOBs (0..5); pass 0xFFFFFFFF to
+ *   SWITCH,
+ *   SWITCH2    : log2 of block height in GOBs (0..5); pass 0xFFFFFFFF to
  *                auto-select from the mip height like the hardware does.
+ *                Both use the same GOB raster, block heights and sizes;
+ *                Switch 2 (Orin) only swaps two address bits inside each
+ *                64-byte x 8-row GOB.
  *   PS5        : a texc_ps5_tile_mode (0 = STANDARD_4KB). For a single
  *                mip the tiled buffer is the block-padded raster
  *                (texc_swizzled_size); for a whole mip chain see

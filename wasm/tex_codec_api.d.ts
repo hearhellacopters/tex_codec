@@ -44,6 +44,8 @@ export type TexFormatValue = (typeof TexFormat)[keyof typeof TexFormat];
 export declare const SwizzleMode: Readonly<{
   NONE: 0; PS4: 1; PS5: 2; SWITCH: 3; PSVITA: 4; X360: 5; PSP: 6; N3DS: 7;
   WIIU: 8; DX12_64KB: 9;
+  /** Switch 2 (Orin); same `arg` and sizes as SWITCH. */
+  SWITCH2: 10;
 }>;
 export type SwizzleModeValue = (typeof SwizzleMode)[keyof typeof SwizzleMode];
 
@@ -275,7 +277,7 @@ export interface TexCodecModule {
    * etc2_rgb_a_atlas.
    *
    * -------------------------------------- per-mode swizzle wrappers ----
-   * For every mode suffix (ps4, ps5, switch, psvita, x360, psp, n3ds, wiiu,
+   * For every mode suffix (ps4, ps5, switch, switch2, psvita, x360, psp, n3ds, wiiu,
    * dx12_64kb):
    *   _texc_unswizzle_<m>(format, w, h, src, srcSize, dst, dstSize,
    *                       arg): number       // tiled -> linear
@@ -316,11 +318,11 @@ export interface EncodeOptions {
 /* Per-format / per-mode helper method names, generated at import time in
  * tex_codec_api.mjs. One method per TexFormat key (minus INVALID), e.g.
  * decodeBC1 / encodeETC2_RGBA8 / encodedSizeASTC_4x4, and one per swizzle
- * mode with prettified names (PS4, PS5, Switch, PSVita, X360, PSP, N3DS,
+ * mode with prettified names (PS4, PS5, Switch, Switch2, PSVita, X360, PSP, N3DS,
  * WiiU, DX12_64KB), e.g. unswizzlePS4 / reswizzleSwitch. */
 export type FormatKey = Exclude<keyof typeof TexFormat, "INVALID">;
 export type SwizzleModeName =
-    "PS4" | "PS5" | "Switch" | "PSVita" | "X360" | "PSP" | "N3DS" | "WiiU" |
+    "PS4" | "PS5" | "Switch" | "Switch2" | "PSVita" | "X360" | "PSP" | "N3DS" | "WiiU" |
     "DX12_64KB";
 
 type PerFormatDecode = {
