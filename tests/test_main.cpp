@@ -6,6 +6,7 @@
  * swizzle -> unswizzle identity for every layout mode, plus error paths.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1107,6 +1108,240 @@ static void test_switch2(void) {
            sizeof(k_switch2_kat) / sizeof(k_switch2_kat[0]));
 }
 
+/* D3D12 64KB tiles as KTGL stores them (Rise of the Ronin PC,
+ * sub_141E3CD10). The reference below follows that loop: tile t of a mip
+ * nx tiles wide sits at (t % nx, t / nx), is min(tw, W - x) x min(th, H - y)
+ * pixels, and is read from the file in one piece, row by row, into the
+ * linear destination. A mip at most one tile wide is read as plain rows. */
+static void ref_dx12_unswizzle(const uint8_t *file, uint8_t *lin, uint32_t w,
+                               uint32_t h, uint32_t tw_px, uint32_t th_px,
+                               uint32_t bw, uint32_t eb) {
+    const uint32_t ew = (w + bw - 1) / bw, eh = (h + bw - 1) / bw;
+    const uint32_t nx = (w + tw_px - 1) / tw_px, ny = (h + th_px - 1) / th_px;
+    if (nx <= 1) {
+        memcpy(lin, file, (size_t)ew * eh * eb);
+        return;
+    }
+    const uint32_t tw = tw_px / bw, th = th_px / bw;
+    for (uint32_t t = 0; t < nx * ny; ++t) {
+        const uint32_t x0 = t % nx * tw, y0 = t / nx * th;
+        const uint32_t cw = ew - x0 < tw ? ew - x0 : tw;
+        const uint32_t ch = eh - y0 < th ? eh - y0 : th;
+        for (uint32_t r = 0; r < ch; ++r, file += (size_t)cw * eb)
+            memcpy(lin + ((size_t)(y0 + r) * ew + x0) * eb, file,
+                   (size_t)cw * eb);
+    }
+}
+
+static void test_dx12_64kb(void) {
+    /* tile shapes in pixels, from sub_141E5E6E0 */
+    const struct { texc_format f; uint32_t tw, th, bw, eb; } fmts[] = {
+        { TEXC_FORMAT_RGBA8, 128, 128, 1, 4 },
+        { TEXC_FORMAT_BC1,   512, 256, 4, 8 },
+        { TEXC_FORMAT_BC4,   512, 256, 4, 8 },
+        { TEXC_FORMAT_BC7,   256, 256, 4, 16 },
+    };
+    const uint32_t dims[][2] = { {2049, 2049}, {256, 1024}, {129, 2},
+                                 {1000, 300}, {64, 64}, {513, 260},
+                                 {4096, 8} };
+    for (auto &f : fmts)
+        for (auto &d : dims) {
+            const size_t lin = texc_encoded_size(f.f, d[0], d[1]);
+            CHECK(texc_swizzled_size(TEXC_SWIZZLE_DX12_64KB, f.f, d[0], d[1],
+                                     0) == lin,
+                  "DX12 %s %ux%u: stored size != linear size",
+                  texc_format_name(f.f), d[0], d[1]);
+            std::vector<uint8_t> file(lin), ref(lin), out(lin);
+            kat_fill(file.data(), lin, d[0] * 31 + d[1]);
+            ref_dx12_unswizzle(file.data(), ref.data(), d[0], d[1], f.tw,
+                               f.th, f.bw, f.eb);
+            int rc = texc_unswizzle(TEXC_SWIZZLE_DX12_64KB, f.f, d[0], d[1],
+                                    file.data(), lin, out.data(), lin, 0);
+            CHECK(rc == TEXC_OK && out == ref, "DX12 %s %ux%u differs from the "
+                  "Ronin detile", texc_format_name(f.f), d[0], d[1]);
+            test_swizzle_roundtrip(TEXC_SWIZZLE_DX12_64KB, f.f, d[0], d[1], 0);
+        }
+    /* 129x2 RGBA8: two tiles, the right one 1 pixel wide, after 128x2. */
+    std::vector<uint8_t> lin(129 * 2 * 4), til(lin.size());
+    for (size_t i = 0; i < lin.size(); ++i) lin[i] = (uint8_t)(i / 4);
+    texc_reswizzle(TEXC_SWIZZLE_DX12_64KB, TEXC_FORMAT_RGBA8, 129, 2,
+                   lin.data(), lin.size(), til.data(), til.size(), 0);
+    CHECK(til[128 * 2 * 4] == 128 && til[128 * 2 * 4 + 4] == (uint8_t)(129 + 128),
+          "DX12 129x2 edge tile placement");
+    printf("  DX12 64KB tile checks done\n");
+}
+
+/* Wii U whole surfaces. The totals are the payload sizes of real Hyrule
+ * Warriors G1Ts (rain.g1t, C_ZELDA_1.g1t, GalleryEnvMap.g1t): mip 0 stays
+ * 2D_TILED_THIN1, smaller mips fall to 1D_TILED_THIN1, single-mip cubes
+ * are six slices. */
+static void test_wiiu_layout(void) {
+    const struct { texc_format f; uint32_t w, h, mips, slices; uint64_t total; }
+        k[] = {
+            { TEXC_FORMAT_BC3,   128,  128,  3, 1,   21504 },
+            { TEXC_FORMAT_BC1,   128,  128,  6, 1,   12288 },
+            { TEXC_FORMAT_BC3,  1024, 1024,  9, 1, 1400832 },
+            { TEXC_FORMAT_BC1,  1024, 1024,  9, 1,  700416 },
+            { TEXC_FORMAT_BC1,    16,   16,  1, 1,    4096 },
+            { TEXC_FORMAT_BC1,   256,  256,  1, 6,  196608 },
+            { TEXC_FORMAT_RGBA8, 128,  128,  1, 6,  393216 },
+        };
+    for (auto &c : k) {
+        texc_surface_layout lay;
+        int rc = texc_get_surface_layout(TEXC_SWIZZLE_WIIU, c.f, c.w, c.h,
+                                         c.mips, c.slices, 0, &lay);
+        CHECK(rc == TEXC_OK && lay.total_size == c.total,
+              "WIIU %s %ux%u x%u mips x%u slices: total %llu != %llu",
+              texc_format_name(c.f), c.w, c.h, c.mips, c.slices,
+              (unsigned long long)lay.total_size, (unsigned long long)c.total);
+        if (rc != TEXC_OK) continue;
+        /* every mip and slice survives reswizzle_mip -> unswizzle_mip */
+        std::vector<uint8_t> surf(lay.total_size, 0);
+        bool ok = true;
+        for (uint32_t s = 0; s < c.slices; ++s)
+            for (uint32_t m = 0; m < c.mips; ++m) {
+                const size_t n = (size_t)lay.mips[m].width * lay.mips[m].height *
+                                 lay.element_bytes;
+                std::vector<uint8_t> a(n), b(n);
+                kat_fill(a.data(), n, m * 7 + s);
+                ok &= texc_reswizzle_mip(TEXC_SWIZZLE_WIIU, c.f, c.w, c.h,
+                                         c.mips, c.slices, 0, m, s, a.data(), n,
+                                         surf.data(), surf.size()) == TEXC_OK;
+                ok &= texc_unswizzle_mip(TEXC_SWIZZLE_WIIU, c.f, c.w, c.h,
+                                         c.mips, c.slices, 0, m, s, surf.data(),
+                                         surf.size(), b.data(), n) == TEXC_OK &&
+                      a == b;
+            }
+        CHECK(ok, "WIIU %s %ux%u: mip roundtrip", texc_format_name(c.f), c.w, c.h);
+    }
+    /* Mip 1 of 128x128 BC3 (16x16 blocks) is 1D_TILED_THIN1 right after
+     * mip 0: 8x8-block micro tiles, row by row at a pitch of 16 blocks,
+     * 128-bit order y0 x0 x1 x2 y1 y2 inside a tile. */
+    texc_surface_layout lay;
+    texc_get_surface_layout(TEXC_SWIZZLE_WIIU, TEXC_FORMAT_BC3, 128, 128, 3, 1,
+                            0, &lay);
+    CHECK(lay.mips[1].offset == 16384 && lay.mips[2].offset == 20480,
+          "WIIU 128x128 BC3 mip offsets");
+    std::vector<uint8_t> lin(16 * 16 * 16), surf(lay.total_size, 0);
+    for (size_t i = 0; i < lin.size(); ++i) lin[i] = (uint8_t)(i / 16);
+    texc_reswizzle_mip(TEXC_SWIZZLE_WIIU, TEXC_FORMAT_BC3, 128, 128, 3, 1, 0, 1,
+                       0, lin.data(), lin.size(), surf.data(), surf.size());
+    bool ok = true;
+    for (uint32_t y = 0; y < 16; ++y)
+        for (uint32_t x = 0; x < 16; ++x) {
+            const uint32_t idx = (y & 1) | (x & 7) << 1 | (y & 6) << 3;
+            const size_t off = 16384 + ((y / 8) * 2 + x / 8) * 1024 + idx * 16;
+            if (surf[off] != (uint8_t)(y * 16 + x)) ok = false;
+        }
+    CHECK(ok, "WIIU 1D mip element order");
+    /* GX2 keeps a level's slices together, which the slice-major layout
+     * struct cannot describe */
+    CHECK(texc_get_surface_layout(TEXC_SWIZZLE_WIIU, TEXC_FORMAT_BC1, 64, 64, 2,
+                                  6, 0, &lay) == TEXC_ERR_UNSUPPORTED,
+          "WIIU mips x slices rejected");
+    printf("  Wii U surface layout checks done\n");
+}
+
+/* X360: byte order per element size (Dynasty Warriors 8's G1T format ->
+ * D3DFORMAT table) and the loader's stored-rows form. */
+static std::vector<uint8_t> x360_tile(texc_format f, uint32_t w, uint32_t h,
+                                      const std::vector<uint8_t> &lin,
+                                      uint32_t arg) {
+    std::vector<uint8_t> t(texc_swizzled_size(TEXC_SWIZZLE_X360, f, w, h, arg));
+    int rc = texc_reswizzle(TEXC_SWIZZLE_X360, f, w, h, lin.data(), lin.size(),
+                            t.data(), t.size(), arg);
+    CHECK(rc == TEXC_OK && !t.empty(), "X360 reswizzle %s %ux%u arg %x rc=%d",
+          texc_format_name(f), w, h, arg, rc);
+    return t;
+}
+
+static void test_x360(void) {
+    /* AUTO = 8in32 for 4-byte texels, 8in16 for blocks; 8in32 is NONE with
+     * each 32-bit word reversed. */
+    {
+        std::vector<uint8_t> lin(64 * 32 * 4);
+        kat_fill(lin.data(), lin.size(), 360);
+        auto none = x360_tile(TEXC_FORMAT_RGBA8, 64, 32, lin, TEXC_X360_ENDIAN_NONE);
+        auto w32 = x360_tile(TEXC_FORMAT_RGBA8, 64, 32, lin, TEXC_X360_ENDIAN_8IN32);
+        auto aut = x360_tile(TEXC_FORMAT_RGBA8, 64, 32, lin, 0);
+        auto h32 = x360_tile(TEXC_FORMAT_RGBA8, 64, 32, lin, TEXC_X360_ENDIAN_16IN32);
+        bool ok = true, ok16 = true;
+        for (size_t i = 0; i < none.size(); ++i) {
+            if (w32[i] != none[(i & ~3u) + 3 - (i & 3)]) ok = false;
+            if (h32[i] != none[(i & ~3u) + ((i & 3) ^ 2)]) ok16 = false;
+        }
+        CHECK(ok, "X360 8IN32 is NONE with 32-bit words reversed");
+        CHECK(ok16, "X360 16IN32 is NONE with 16-bit halves swapped");
+        CHECK(aut == w32, "X360 AUTO for RGBA8 is 8IN32");
+    }
+    {
+        std::vector<uint8_t> lin(texc_encoded_size(TEXC_FORMAT_BC1, 128, 128));
+        kat_fill(lin.data(), lin.size(), 361);
+        CHECK(x360_tile(TEXC_FORMAT_BC1, 128, 128, lin, 0) ==
+                  x360_tile(TEXC_FORMAT_BC1, 128, 128, lin, TEXC_X360_ENDIAN_8IN16),
+              "X360 AUTO for BC1 is 8IN16");
+    }
+    CHECK(texc_swizzled_size(TEXC_SWIZZLE_X360, TEXC_FORMAT_RGBA8, 64, 64,
+                             2 | TEXC_X360_ENDIAN_8IN32) == 0,
+          "X360 8IN32 with a 2-byte pitch rejected");
+    for (uint32_t e : { 0x000u, 0x100u, 0x200u, 0x300u, 0x400u })
+        test_swizzle_roundtrip(TEXC_SWIZZLE_X360, TEXC_FORMAT_RGBA8, 64, 64, e);
+
+    /* LOADER_ROWS: stored row r = the tiled surface's bytes at r * pitch,
+     * one row of elements long. */
+    const struct { texc_format f; uint32_t w, h; } cases[] = {
+        { TEXC_FORMAT_RGBA8, 256, 128 },   /* row == pitch       */
+        { TEXC_FORMAT_RGBA8, 40, 8 },      /* row < pitch        */
+        { TEXC_FORMAT_BC1, 128, 64 },      /* the request's case */
+        { TEXC_FORMAT_BC3, 200, 100 },
+    };
+    for (auto &c : cases) {
+        const uint32_t bw = c.f == TEXC_FORMAT_RGBA8 ? 1 : 4;
+        const uint32_t gw = (c.w + bw - 1) / bw, gh = (c.h + bw - 1) / bw;
+        const size_t lin_size = texc_encoded_size(c.f, c.w, c.h);
+        const size_t eb = lin_size / ((size_t)gw * gh);
+        const size_t row = gw * eb, pitch = ((gw + 31) & ~31u) * eb;
+        CHECK(texc_swizzled_size(TEXC_SWIZZLE_X360, c.f, c.w, c.h,
+                                 TEXC_X360_LOADER_ROWS) == lin_size,
+              "X360 rows %ux%u: stored size != linear size", c.w, c.h);
+        std::vector<uint8_t> lin(lin_size);
+        kat_fill(lin.data(), lin_size, c.w + c.h);
+        auto surf = x360_tile(c.f, c.w, c.h, lin, 0);
+        auto rows = x360_tile(c.f, c.w, c.h, lin, TEXC_X360_LOADER_ROWS);
+        std::vector<uint8_t> want(lin_size), loaded(surf.size(), 0);
+        for (uint32_t r = 0; r < gh; ++r) {
+            memcpy(&want[r * row], &surf[r * pitch], row);
+            memcpy(&loaded[r * pitch], &surf[r * pitch], row);
+        }
+        CHECK(rows == want, "X360 rows %s %ux%u: stored rows != surface rows",
+              texc_format_name(c.f), c.w, c.h);
+        /* unswizzle(rows) = unswizzle of the surface the loader fills */
+        std::vector<uint8_t> a(lin_size), b(lin_size);
+        texc_unswizzle(TEXC_SWIZZLE_X360, c.f, c.w, c.h, loaded.data(),
+                       loaded.size(), a.data(), lin_size, 0);
+        int rc = texc_unswizzle(TEXC_SWIZZLE_X360, c.f, c.w, c.h, rows.data(),
+                                rows.size(), b.data(), lin_size,
+                                TEXC_X360_LOADER_ROWS);
+        CHECK(rc == TEXC_OK && a == b, "X360 rows %s %ux%u: unswizzle differs "
+              "from the loaded surface", texc_format_name(c.f), c.w, c.h);
+        /* short input: the missing tail reads as zeros */
+        const size_t half = lin_size / 2;
+        std::fill(loaded.begin(), loaded.end(), 0);
+        for (size_t i = 0; i < half; ++i)
+            loaded[i / row * pitch + i % row] = rows[i];
+        texc_unswizzle(TEXC_SWIZZLE_X360, c.f, c.w, c.h, loaded.data(),
+                       loaded.size(), a.data(), lin_size, 0);
+        rc = texc_unswizzle(TEXC_SWIZZLE_X360, c.f, c.w, c.h, rows.data(),
+                            half, b.data(), lin_size, TEXC_X360_LOADER_ROWS);
+        CHECK(rc == TEXC_OK && a == b, "X360 rows %s %ux%u: short input",
+              texc_format_name(c.f), c.w, c.h);
+    }
+    /* full-width, 32-aligned: nothing is lost, so rows roundtrip */
+    test_swizzle_roundtrip(TEXC_SWIZZLE_X360, TEXC_FORMAT_BC1, 128, 128,
+                           TEXC_X360_LOADER_ROWS);
+    printf("  X360 byte order + loader rows checks done\n");
+}
+
 static void test_error_paths(void) {
     uint8_t buf[64] = {0};
     CHECK(texc_decode(TEXC_FORMAT_BC1, nullptr, 0, 4, 4, buf, 64) ==
@@ -1220,6 +1455,9 @@ int main(void) {
     test_wii();
     test_ps5_layout();
     test_switch2();
+    test_dx12_64kb();
+    test_x360();
+    test_wiiu_layout();
     /* the pre-1.6 PS5 layout stays reachable and invertible */
     test_swizzle_roundtrip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 256, 128,
                            TEXC_PS5_TILE_LEGACY);

@@ -59,6 +59,18 @@ export declare const PS5TileMode: Readonly<{
 }>;
 export type PS5TileModeValue = (typeof PS5TileMode)[keyof typeof PS5TileMode];
 
+/** X360 byte order, OR'ed into the `arg` of SwizzleMode.X360 with the
+ *  texel pitch override (low byte); values match `texc_x360_endian`. AUTO
+ *  follows KTGL's X360 loader: 8IN16 for block formats and 2/8-byte
+ *  texels, 8IN32 for 4/16-byte texels, NONE for 1-byte texels. */
+export declare const X360Endian: Readonly<{
+  AUTO: 0; NONE: 0x100; E8IN16: 0x200; E8IN32: 0x300; E16IN32: 0x400;
+}>;
+/** X360 `arg` flag: the tiled side is the rows a G1T stores rather than
+ *  the whole tiled surface; `unswizzle` then accepts shorter data and
+ *  reads the missing tail as zeros. */
+export declare const X360LoaderRows: 0x10000;
+
 /** Where one mip lives inside a whole tiled surface. Sizes are in
  *  ELEMENTS (compressed blocks, or pixels for raw formats). */
 export interface MipLayout {
@@ -418,7 +430,8 @@ export declare class TexSwizzler {
   swizzle(mode: SwizzleModeValue | number, format: TexFormatValue | number,
           data: Uint8Array, width: number, height: number,
           arg?: number): Promise<Uint8Array>;
-  /** Layout of a whole tiled surface (mip chain x slices). PS5 and NONE. */
+  /** Layout of a whole tiled surface (mip chain x slices). PS5, WIIU (a mip
+   *  chain, or several slices of one mip) and NONE. */
   surfaceLayout(mode: SwizzleModeValue | number,
                 format: TexFormatValue | number, width: number,
                 height: number, mipCount: number,

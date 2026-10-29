@@ -5,8 +5,9 @@
  * Switch-Toolbox GX2 decoder (KillzXGaming/Switch-Toolbox, itself derived
  * from AboodXD's addrlib and AMD's addrlib).
  *
- * Only the paths used by G1T textures are exposed: mip level 0, 2D
- * surfaces, no AA, tile modes 0-15 (default 4 = ADDR_TM_2D_TILED_THIN1).
+ * Only the paths used by G1T textures are exposed: 2D surfaces (one or
+ * more slices), any mip level, no AA, tile modes 0-15 (default 4 =
+ * ADDR_TM_2D_TILED_THIN1).
  */
 #ifndef TEXC_GX2_ADDRLIB_H
 #define TEXC_GX2_ADDRLIB_H
@@ -19,9 +20,10 @@ namespace gx2 {
 struct SurfaceInfo {
     uint32_t pitch;    /* padded pitch in elements (blocks for BCn)   */
     uint32_t height;   /* padded height in elements                   */
-    uint32_t surf_size;/* total tiled surface size in bytes           */
+    uint32_t surf_size;/* tiled size in bytes, all slices of the level */
     uint32_t tile_mode;/* resolved addr tile mode (16 == linear)      */
     uint32_t bpp;      /* bits per element (64 BC1-class, 128 BC3-class, 32 raw) */
+    uint32_t base_align;/* required start alignment in bytes          */
 };
 
 /* hw_format: GX2 hardware format code, e.g. 0x31 (BC1-class 8B/4x4 block),
@@ -32,11 +34,20 @@ bool compute_surface_info_mip0(uint32_t hw_format, uint32_t width,
                                uint32_t height, uint32_t tile_mode,
                                SurfaceInfo *out);
 
-/* Byte address of element (x, y) inside the tiled surface (slice 0,
- * sample 0). bpp/pitch/height/tile_mode come from SurfaceInfo;
- * pipe_swizzle/bank_swizzle are decoded from the GX2 swizzle value as
+/* Mip level `mip_level` of a `slices`-deep 2D surface whose mip 0 is
+ * width x height pixels. tile_mode is the surface's (base) tile mode; the
+ * resolved mode of this level comes back in out->tile_mode. */
+bool compute_surface_info(uint32_t hw_format, uint32_t width,
+                          uint32_t height, uint32_t slices,
+                          uint32_t tile_mode, uint32_t mip_level,
+                          SurfaceInfo *out);
+
+/* Byte address of element (x, y) of `slice` inside one level's tiled
+ * surface (sample 0); slices rotate the pipe/bank in macro-tiled modes.
+ * bpp/pitch/height/tile_mode come from SurfaceInfo; pipe_swizzle /
+ * bank_swizzle are decoded from the GX2 swizzle value as
  * pipe = (swz >> 8) & 1, bank = (swz >> 9) & 3. */
-int64_t addr_from_coord(uint32_t x, uint32_t y, uint32_t bpp,
+int64_t addr_from_coord(uint32_t x, uint32_t y, uint32_t slice, uint32_t bpp,
                         uint32_t pitch, uint32_t height, uint32_t tile_mode,
                         uint32_t pipe_swizzle, uint32_t bank_swizzle);
 

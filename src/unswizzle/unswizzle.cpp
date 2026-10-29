@@ -70,17 +70,38 @@ bool get_grid(texc_format fmt, uint32_t w, uint32_t h, Grid *g)
     return g->ew != 0 && g->eh != 0;
 }
 
-/* 16-bit byte swap copy (X360 stores data big-endian; the reference's
- * unswizzle_x360 swaps while untiling). */
-void copy_swap16(uint8_t *d, const uint8_t *s, uint32_t n)
+/* Copy n bytes applying a Xenos GPUENDIAN mode (0 none, 1 8in16, 2 8in32,
+ * 3 16in32); n is a multiple of the swap unit. Each mode is its own
+ * inverse. */
+void copy_endian(uint8_t *d, const uint8_t *s, uint32_t n, uint32_t endian)
 {
-    uint32_t i = 0;
-    for (; i + 1 < n; i += 2) {
-        d[i]     = s[i + 1];
-        d[i + 1] = s[i];
+    switch (endian) {
+    case 1:
+        for (uint32_t i = 0; i < n; i += 2) {
+            d[i]     = s[i + 1];
+            d[i + 1] = s[i];
+        }
+        break;
+    case 2:
+        for (uint32_t i = 0; i < n; i += 4) {
+            d[i]     = s[i + 3];
+            d[i + 1] = s[i + 2];
+            d[i + 2] = s[i + 1];
+            d[i + 3] = s[i];
+        }
+        break;
+    case 3:
+        for (uint32_t i = 0; i < n; i += 4) {
+            d[i]     = s[i + 2];
+            d[i + 1] = s[i + 3];
+            d[i + 2] = s[i];
+            d[i + 3] = s[i + 1];
+        }
+        break;
+    default:
+        memcpy(d, s, n);
+        break;
     }
-    if (i < n)
-        d[i] = s[i];
 }
 
 /* Generic driver for modes expressed as a mapping from a linear element
@@ -207,17 +228,6 @@ inline uint64_t map_psp(uint32_t prow, uint32_t xb, uint32_t y)
            (uint64_t)(y & 7) * 16 + (xb & 15);
 }
 
-/* --------------------------- D3D12 64KB raw: port of D3D12_64KBSwizzleRaw */
-/* CustomSwizzle items {MortonX,128},{MortonY,128},{MortonX,16} evaluated in
- * closed form for pw a multiple of 128. */
-inline uint64_t map_d3d12_raw(uint32_t pw, uint32_t x, uint32_t y, uint32_t eb)
-{
-    const uint64_t sw = (uint64_t)(x % 128) + (uint64_t)(y % 128) * 128 +
-                        (uint64_t)((x / 128) % 16) * 16384 +
-                        (uint64_t)(x / 2048) * 262144;
-    return ((uint64_t)(y / 128) * 128 * pw + sw) * eb;
-}
-
 /* ------------------------------------------- Switch (Tegra X1) GOBs ----- */
 /* 64-byte x 8-row GOBs stacked into blocks of `bh` GOBs. Matches
  * swizzled_mip_size() in ref/G1T.h and the layout consumed by
@@ -326,7 +336,11 @@ uint32_t xg_tiled_y(uint32_t block_offset, uint32_t width_in_blocks,
 bool x360_texel_grid(const Grid &g, uint32_t arg,
                      uint32_t *pitch, uint32_t *gw, uint32_t *gh)
 {
-    uint32_t p = arg ? arg : g.eb;
+    if (arg & ~(TEXC_X360_PITCH_MASK | TEXC_X360_ENDIAN_MASK |
+                TEXC_X360_LOADER_ROWS))
+        return false;
+    const uint32_t ov = arg & TEXC_X360_PITCH_MASK;
+    uint32_t p = ov ? ov : g.eb;
     if (p == 0 || p > 16 || (p & (p - 1)) != 0)
         return false;
     const uint64_t row_bytes = (uint64_t)g.ew * g.eb;
@@ -338,12 +352,33 @@ bool x360_texel_grid(const Grid &g, uint32_t arg,
     return true;
 }
 
+/* Xenos byte order for `arg` (see texc_x360_endian): an explicit mode, or
+ * the one KTGL's X360 loader declares for the element size. Returns the
+ * GPUENDIAN value, or -1 when the swap unit does not divide the pitch. */
+int x360_endian(const Grid &g, uint32_t arg, uint32_t p)
+{
+    uint32_t e = (arg & TEXC_X360_ENDIAN_MASK) >> 8;
+    if (e)
+        --e;
+    else if (g.bw > 1 || g.bh > 1)
+        e = 1;                           /* DXT: 8in16 */
+    else
+        e = g.eb == 1 ? 0 : (g.eb == 2 || g.eb == 8) ? 1 : 2;
+    if (e > 3)
+        return -1;
+    const uint32_t unit = e == 0 ? 1 : e == 1 ? 2 : 4;
+    return p % unit ? -1 : (int)e;
+}
+
 int convert_x360(const Grid &g, uint32_t arg,
                  const uint8_t *src, size_t src_size,
                  uint8_t *dst, size_t dst_size, bool to_linear)
 {
     uint32_t p = 0, gw = 0, gh = 0;
     if (!x360_texel_grid(g, arg, &p, &gw, &gh))
+        return TEXC_ERR_INVALID_ARG;
+    const int endian = x360_endian(g, arg, p);
+    if (endian < 0)
         return TEXC_ERR_INVALID_ARG;
 
     const uint32_t pw = align_up(gw, 32);
@@ -353,13 +388,20 @@ int convert_x360(const Grid &g, uint32_t arg,
     if (tiled_size > (uint64_t)SIZE_MAX)
         return TEXC_ERR_INVALID_ARG;
 
+    /* LOADER_ROWS: the tiled side is the surface as the loader fills it -
+     * stored row r (row bytes) lands at surface offset r * pitch, and
+     * everything else in the surface is never written (zeros). */
+    const bool rows = (arg & TEXC_X360_LOADER_ROWS) != 0;
+    const uint64_t row = (uint64_t)gw * p, pitch = (uint64_t)pw * p;
+    const uint64_t stored_size = rows ? lin_size : tiled_size;
+
     if (to_linear) {
-        if (src_size < tiled_size || dst_size < lin_size)
+        if ((!rows && src_size < tiled_size) || dst_size < lin_size)
             return TEXC_ERR_BUFFER_TOO_SMALL;
     } else {
-        if (src_size < lin_size || dst_size < tiled_size)
+        if (src_size < lin_size || dst_size < stored_size)
             return TEXC_ERR_BUFFER_TOO_SMALL;
-        memset(dst, 0, (size_t)tiled_size);
+        memset(dst, 0, (size_t)stored_size);
     }
 
     const uint64_t total = (uint64_t)pw * ph;
@@ -368,14 +410,28 @@ int convert_x360(const Grid &g, uint32_t arg,
         const uint32_t y = xg_tiled_y((uint32_t)t, pw, p);
         if (x >= gw || y >= gh)
             continue; /* padding element */
-        const uint64_t toff = t * p;
+        uint64_t toff = t * p;
         const uint64_t loff = ((uint64_t)y * gw + x) * p;
-        /* The reference byte-swaps 16-bit words while untiling (Xenos data
-         * is big-endian); the inverse re-swaps. */
+        if (rows) {
+            const uint64_t r = toff / pitch, c = toff % pitch;
+            const bool stored = r < gh && c < row &&
+                                (!to_linear || r * row + c + p <= src_size);
+            if (!stored) {
+                /* never loaded: reads as zeros, cannot be written */
+                if (to_linear)
+                    memset(dst + (size_t)loff, 0, p);
+                continue;
+            }
+            toff = r * row + c;
+        }
+        /* Xenos data is big-endian per the format's GPUENDIAN mode; every
+         * mode is its own inverse. */
         if (to_linear)
-            copy_swap16(dst + (size_t)loff, src + (size_t)toff, p);
+            copy_endian(dst + (size_t)loff, src + (size_t)toff, p,
+                        (uint32_t)endian);
         else
-            copy_swap16(dst + (size_t)toff, src + (size_t)loff, p);
+            copy_endian(dst + (size_t)toff, src + (size_t)loff, p,
+                        (uint32_t)endian);
     }
     return TEXC_OK;
 }
@@ -565,46 +621,49 @@ int convert_ps5_legacy(const Grid &g,
     return TEXC_OK;
 }
 
-/* ------------------------------------------------ D3D12 64KB (BCn) ------ */
-/* Port of DeswizzleD3D12_64KBDXT: 64KB tiles in row-major tile order; each
- * tile holds 64 rows of 1024 bytes (1024 / block_bytes blocks per row).
- * Data of 64KB or less is stored linearly (see the currentImageSize > 65536
- * check in G1T.h) - handled by the caller. */
-int convert_dx12_bc(const Grid &g,
-                    const uint8_t *src, size_t src_size,
-                    uint8_t *dst, size_t dst_size, bool to_linear)
+/* ------------------------------------------------ D3D12 64KB tiles ------ */
+/* KTGL's on-disk form of a D3D12 64KB-tiled (reserved) texture, from the
+ * CPU upload path of Rise of the Ronin PC (sub_141E3CD10): each mip is cut
+ * into tiles of the D3D12 standard 64KB shape for its element size, tiles
+ * go row-major, and each tile is stored contiguously as its own rows. Edge
+ * tiles are only as wide / tall as what is left, so the stored size is
+ * exactly the linear size, and a mip at most one tile wide is plain
+ * linear. Shapes are in elements (blocks for BCn): BC1/BC4 tiles are
+ * 512x256 pixels, BC2/3/5/6H/7 256x256. */
+bool dx12_tile_shape(uint32_t eb, uint32_t *tw, uint32_t *th)
 {
-    const uint32_t tile_w = 1024 / g.eb;
-    const uint32_t tiles_x = (g.ew + tile_w - 1) / tile_w;
-    const uint32_t tiles_y = (g.eh + 63) / 64;
-    const uint64_t tiled_size = (uint64_t)tiles_x * tiles_y * 65536u;
-    const uint64_t lin_size = (uint64_t)g.ew * g.eh * g.eb;
-    if (tiled_size > (uint64_t)SIZE_MAX)
-        return TEXC_ERR_INVALID_ARG;
-
-    if (to_linear) {
-        if (src_size < tiled_size || dst_size < lin_size)
-            return TEXC_ERR_BUFFER_TOO_SMALL;
-    } else {
-        if (src_size < lin_size || dst_size < tiled_size)
-            return TEXC_ERR_BUFFER_TOO_SMALL;
-        memset(dst, 0, (size_t)tiled_size);
+    switch (eb) {
+    case 1:  *tw = 256; *th = 256; return true;
+    case 2:  *tw = 256; *th = 128; return true;
+    case 4:  *tw = 128; *th = 128; return true;
+    case 8:  *tw = 128; *th = 64;  return true;
+    case 16: *tw = 64;  *th = 64;  return true;
+    default: return false;
     }
+}
 
-    for (uint32_t ty = 0; ty < tiles_y; ++ty) {
-        for (uint32_t tx = 0; tx < tiles_x; ++tx) {
-            const uint64_t tile_base = ((uint64_t)ty * tiles_x + tx) * 65536u;
-            for (uint32_t row = 0; row < 64; ++row) {
-                const uint32_t y = ty * 64 + row;
-                if (y >= g.eh)
-                    continue;
-                const uint32_t x_off = tx * tile_w;
-                if (x_off >= g.ew)
-                    continue;
-                const uint32_t n =
-                    umin32(tile_w, g.ew - x_off) * g.eb;
-                const uint64_t toff = tile_base + (uint64_t)row * 1024;
-                const uint64_t loff = ((uint64_t)y * g.ew + x_off) * g.eb;
+int convert_dx12_64kb(const Grid &g,
+                      const uint8_t *src, size_t src_size,
+                      uint8_t *dst, size_t dst_size, bool to_linear)
+{
+    uint32_t tw = 0, th = 0;
+    if (!dx12_tile_shape(g.eb, &tw, &th))
+        return TEXC_ERR_UNSUPPORTED;
+    const uint64_t row = (uint64_t)g.ew * g.eb;
+    const uint64_t size = row * g.eh;
+    if (size > (uint64_t)SIZE_MAX)
+        return TEXC_ERR_INVALID_ARG;
+    if (src_size < size || dst_size < size)
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+
+    uint64_t toff = 0;
+    for (uint32_t y0 = 0; y0 < g.eh; y0 += th) {
+        const uint32_t ch = umin32(th, g.eh - y0);
+        for (uint32_t x0 = 0; x0 < g.ew; x0 += tw) {
+            const uint32_t n = umin32(tw, g.ew - x0) * g.eb;
+            for (uint32_t r = 0; r < ch; ++r, toff += n) {
+                const uint64_t loff = (uint64_t)(y0 + r) * row +
+                                      (uint64_t)x0 * g.eb;
                 if (to_linear)
                     memcpy(dst + (size_t)loff, src + (size_t)toff, n);
                 else
@@ -657,9 +716,93 @@ int convert_wiiu(const Grid &g, uint32_t w, uint32_t h, uint32_t arg,
     return run_map(g, si.surf_size, src, src_size, dst, dst_size, to_linear,
                    [&](uint32_t x, uint32_t y) -> uint64_t {
                        return (uint64_t)gx2::addr_from_coord(
-                           x, y, bpp, pitch, sheight, tile_mode,
+                           x, y, 0, bpp, pitch, sheight, tile_mode,
                            pipe_swz, bank_swz);
                    });
+}
+
+/* Whole GX2 surface, as KTGL's Wii U loader hands it to GX2 (tile mode
+ * DEFAULT = 2D_TILED_THIN1, Hyrule Warriors): mip 0 at offset 0, then
+ * each further level at its addrlib base alignment. Levels narrower than
+ * a macro tile resolve to 1D_TILED_THIN1, padded to 8x8 micro tiles -
+ * the mips the G1T payload sizes and the decoded pixels both confirm.
+ * GX2 keeps every slice of a level together, so several slices are only
+ * expressible here (slice-major) for a single mip. */
+int layout_wiiu(const Grid &g, uint32_t w, uint32_t h, uint32_t mips,
+                uint32_t slices, texc_surface_layout *out)
+{
+    uint32_t hw = 0;
+    if (!wiiu_hw_format(g, &hw))
+        return TEXC_ERR_UNSUPPORTED;
+    if (mips > TEXC_MAX_MIPS)
+        return TEXC_ERR_INVALID_ARG;
+    if (mips > 1 && slices > 1)
+        return TEXC_ERR_UNSUPPORTED;
+    memset(out, 0, sizeof *out);
+    out->mip_count = mips;
+    out->slice_count = slices;
+    out->first_mip_in_tail = mips;
+    out->block_width = out->block_height = 8;   /* micro tile */
+    out->block_bytes = 64 * g.eb;
+    out->element_bytes = g.eb;
+    uint64_t off = 0;
+    for (uint32_t m = 0; m < mips; ++m) {
+        gx2::SurfaceInfo si;
+        if (!gx2::compute_surface_info(hw, w, h, slices, 4, m, &si) ||
+            si.bpp / 8 != g.eb)
+            return TEXC_ERR_UNSUPPORTED;
+        texc_mip_layout &mi = out->mips[m];
+        const uint32_t mw = (w >> m) ? (w >> m) : 1;
+        const uint32_t mh = (h >> m) ? (h >> m) : 1;
+        mi.width = (mw + g.bw - 1) / g.bw;
+        mi.height = (mh + g.bh - 1) / g.bh;
+        mi.padded_width = si.pitch;
+        mi.padded_height = si.height;
+        off = (off + si.base_align - 1) / si.base_align * si.base_align;
+        mi.offset = off;
+        mi.size = si.surf_size / slices;
+        off += si.surf_size;
+    }
+    out->slice_size = slices > 1 ? out->mips[0].size : off;
+    out->total_size = off;
+    return TEXC_OK;
+}
+
+int convert_mip_wiiu(const Grid &g, uint32_t w, uint32_t h,
+                     const texc_surface_layout &lay, uint32_t arg,
+                     uint32_t mip, uint32_t slice,
+                     const uint8_t *src, size_t src_size,
+                     uint8_t *dst, size_t dst_size, bool to_linear)
+{
+    uint32_t hw = 0;
+    gx2::SurfaceInfo si;
+    if (!wiiu_hw_format(g, &hw) ||
+        !gx2::compute_surface_info(hw, w, h, lay.slice_count, 4, mip, &si))
+        return TEXC_ERR_UNSUPPORTED;
+    const texc_mip_layout &mi = lay.mips[mip];
+    const uint64_t lin = (uint64_t)mi.width * mi.height * g.eb;
+    if (lay.total_size > (uint64_t)SIZE_MAX)
+        return TEXC_ERR_INVALID_ARG;
+    if (to_linear ? (src_size < lay.total_size || dst_size < lin)
+                  : (src_size < lin || dst_size < lay.total_size))
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+
+    const uint32_t pipe_swz = (arg >> 8) & 1;
+    const uint32_t bank_swz = (arg >> 9) & 3;
+    for (uint32_t y = 0; y < mi.height; ++y)
+        for (uint32_t x = 0; x < mi.width; ++x) {
+            const uint64_t toff = mi.offset + (uint64_t)gx2::addr_from_coord(
+                x, y, slice, si.bpp, si.pitch, si.height, si.tile_mode,
+                pipe_swz, bank_swz);
+            const uint64_t loff = ((uint64_t)y * mi.width + x) * g.eb;
+            if (toff + g.eb > lay.total_size)
+                return TEXC_ERR_BUFFER_TOO_SMALL;
+            if (to_linear)
+                memcpy(dst + (size_t)loff, src + (size_t)toff, g.eb);
+            else
+                memcpy(dst + (size_t)toff, src + (size_t)loff, g.eb);
+        }
+    return TEXC_OK;
 }
 
 /* ----------------------------------------------- tiled size per mode ---- */
@@ -708,8 +851,11 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
 
     case TEXC_SWIZZLE_X360: {
         uint32_t p = 0, gw = 0, gh = 0;
-        if (!x360_texel_grid(g, arg, &p, &gw, &gh))
+        if (!x360_texel_grid(g, arg, &p, &gw, &gh) ||
+            x360_endian(g, arg, p) < 0)
             return 0;
+        if (arg & TEXC_X360_LOADER_ROWS)
+            return (uint64_t)gw * gh * p;
         return (uint64_t)align_up(gw, 32) * align_up(gh, 32) * p;
     }
 
@@ -726,16 +872,9 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
     }
 
     case TEXC_SWIZZLE_DX12_64KB: {
-        /* Data of 64KB or less is not swizzled (reference behaviour). */
-        if (lin <= 65536)
-            return lin;
-        if (g.bw > 1) {
-            const uint32_t tile_w = 1024 / g.eb;
-            const uint64_t tx = ((uint64_t)g.ew + tile_w - 1) / tile_w;
-            const uint64_t ty = ((uint64_t)g.eh + 63) / 64;
-            return tx * ty * 65536ull;
-        }
-        return (uint64_t)align_up(g.ew, 128) * align_up(g.eh, 128) * g.eb;
+        /* Edge tiles are stored partial: always the linear size. */
+        uint32_t tw = 0, th = 0;
+        return dx12_tile_shape(g.eb, &tw, &th) ? lin : 0;
     }
 
     default:
@@ -875,24 +1014,9 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
         return convert_wiiu(g, width, height, arg, src, src_size, dst,
                             dst_size, dir_to_linear);
 
-    case TEXC_SWIZZLE_DX12_64KB: {
-        if (lin <= 65536) {
-            /* Not swizzled below/at 64KB (reference behaviour). */
-            if (src_size < lin || dst_size < lin)
-                return TEXC_ERR_BUFFER_TOO_SMALL;
-            memcpy(dst, src, (size_t)lin);
-            return TEXC_OK;
-        }
-        if (g.bw > 1)
-            return convert_dx12_bc(g, src, src_size, dst, dst_size,
-                                   dir_to_linear);
-        const uint64_t ts = tiled_size_impl(mode, g, width, height, arg);
-        const uint32_t pw = align_up(g.ew, 128);
-        return run_map(g, ts, src, src_size, dst, dst_size, dir_to_linear,
-                       [&](uint32_t x, uint32_t y) {
-                           return map_d3d12_raw(pw, x, y, g.eb);
-                       });
-    }
+    case TEXC_SWIZZLE_DX12_64KB:
+        return convert_dx12_64kb(g, src, src_size, dst, dst_size,
+                                 dir_to_linear);
 
     default:
         return TEXC_ERR_UNSUPPORTED;
@@ -949,6 +1073,8 @@ int surface_layout(texc_swizzle_mode mode, texc_format fmt,
             return TEXC_ERR_UNSUPPORTED;
         return ps5::surface_layout(width, height, g.bw, g.bh, g.eb,
                                    mips, slices, arg, out);
+    case TEXC_SWIZZLE_WIIU:
+        return layout_wiiu(g, width, height, mips, slices, out);
     default:
         return TEXC_ERR_UNSUPPORTED;
     }
@@ -972,6 +1098,12 @@ int convert_mip(texc_swizzle_mode mode, texc_format fmt,
     if (mode == TEXC_SWIZZLE_PS5)
         return ps5::convert_mip(lay, arg, mip, slice, src, src_size,
                                 dst, dst_size, dir_to_linear, false);
+    if (mode == TEXC_SWIZZLE_WIIU) {
+        Grid g;
+        get_grid(fmt, width, height, &g);
+        return convert_mip_wiiu(g, width, height, lay, arg, mip, slice, src,
+                                src_size, dst, dst_size, dir_to_linear);
+    }
 
     /* NONE: a plain copy at the mip's offset. */
     const texc_mip_layout &mi = lay.mips[mip];
@@ -1195,12 +1327,10 @@ int main()
         s = texc::swizzled_size(TEXC_SWIZZLE_PS4, TEXC_FORMAT_BC1, 37, 23, 0);
         check(s == 16 * 8 * 8, "PS4 37x23 BC1 pads to 8x8 tiles");
 
-        /* DX12 <= 64KB stays linear. */
-        s = texc::swizzled_size(TEXC_SWIZZLE_DX12_64KB, TEXC_FORMAT_BC1, 256, 128, 0);
-        check(s == format_linear_size(TEXC_FORMAT_BC1, 256, 128),
-              "DX12 <=64KB not swizzled");
-        s = texc::swizzled_size(TEXC_SWIZZLE_DX12_64KB, TEXC_FORMAT_BC1, 512, 512, 0);
-        check(s == 2 * 65536, "DX12 512x512 BC1 = 2 x 64KB tiles");
+        /* DX12 edge tiles are stored partial: always the linear size. */
+        s = texc::swizzled_size(TEXC_SWIZZLE_DX12_64KB, TEXC_FORMAT_BC1, 2049, 2049, 0);
+        check(s == format_linear_size(TEXC_FORMAT_BC1, 2049, 2049),
+              "DX12 2049x2049 BC1 = linear size");
     }
 
     /* Buffer bounds: short tiled buffer must be rejected, not overrun. */

@@ -153,11 +153,11 @@ the test suite. Supported layouts:
 | `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto); G1T platform `0x10` |
 | `TEXC_SWIZZLE_SWITCH2` | Switch 2 / NVIDIA Orin block-linear GOBs, same `arg` and sizes as `SWITCH`; G1T platform `0x18` |
 | `TEXC_SWIZZLE_PSVITA` | GXM: 32x32 pixel tiles for raw formats (`arg` = bytes per pixel, 0 = the format's own; G1T ships 8/16/24/32bpp raw Vita textures), Morton / Z-order for block formats |
-| `TEXC_SWIZZLE_X360` | Xenos macro tiling |
+| `TEXC_SWIZZLE_X360` | Xenos macro tiling (`arg` = pitch override, byte order and stored-rows flag, see below) |
 | `TEXC_SWIZZLE_PSP` | 16-byte x 8-row tiles |
 | `TEXC_SWIZZLE_3DS` | 8x8 Z-order tiles |
 | `TEXC_SWIZZLE_WIIU` | GX2 tiled (`arg` = GX2 swizzle value) |
-| `TEXC_SWIZZLE_DX12_64KB` | D3D12 64KB standard swizzle (<64KB data is linear) |
+| `TEXC_SWIZZLE_DX12_64KB` | D3D12 64KB tiles as KTGL stores them: always the linear size, see below |
 
 `texc_decode_swizzled` does unswizzle + decode in one call. Container
 parsing is intentionally left to the adopting project - this library 
@@ -193,6 +193,72 @@ image are dropped, as the reference does. That only happens when a
 dimension is not a multiple of 32, where the mapping is consequently not
 invertible. A test compares the port against the reference formula across
 sizes and 8/16/24/32bpp.
+
+### D3D12 64KB tiles (KTGL PC)
+
+KTGL streams large PC textures into D3D12 reserved resources in 64 KB
+tiles, and the G1T stores the data in that tile order (the "swizzle" field
+of the texture's extended header). Taken from Rise of the Ronin's own CPU
+upload path:
+
+- each mip is cut into tiles of the D3D12 standard 64 KB shape for its
+  element size: 256x256 elements at 1 byte, 256x128 at 2, 128x128 at 4,
+  128x64 at 8 and 64x64 at 16. In pixels, BC1/BC4 tiles are 512x256 and
+  BC2/3/5/6H/7 tiles 256x256;
+- tiles run left to right, then top to bottom;
+- each tile is stored in one piece, row by row (block rows for BCn), and
+  tiles on the right and bottom edges are only as wide or tall as what is
+  left.
+
+So the stored size is always the linear size, and a mip at most one tile
+wide is plain linear. In a whole texture KTGL orders the data by mip, then
+by array slice (mip 0 of every slice first). Up to 1.7 this mode used
+padded edge tiles, a "64 KB or less is linear" rule and 128x128 raw tiles
+for every element size; all three were wrong.
+
+### X360 (Xenos) byte order and stored rows
+
+The X360 `arg` packs three fields: the texel pitch override in the low
+byte, a `texc_x360_endian` in bits 8-10, and the `TEXC_X360_LOADER_ROWS`
+flag. With `TEXC_X360_ENDIAN_AUTO` (0) the byte order follows the
+D3DFORMATs Koei Tecmo's X360 loader declares (Dynasty Warriors 8):
+`8IN16` for DXT and 2- or 8-byte texels, `8IN32` for 4- and 16-byte texels,
+none for 1-byte texels. Up to 1.7 every format was swapped `8IN16`, which
+scrambles 32-bit texels such as RGBA8; pass `TEXC_X360_ENDIAN_8IN16` to get
+that back.
+
+The loader does not untile anything: it reads each mip's `ceil(h/bh)` rows
+of tightly packed elements straight into the locked tiled surface, one row
+per surface pitch (the width in elements rounded up to 32), and never
+writes the rest of the surface. `TEXC_X360_LOADER_ROWS` makes the tiled
+side exactly that stored data: `texc_swizzled_size` returns the stored size
+(the linear size), `texc_unswizzle` places the rows at the pitch, accepts a
+shorter `src` and reads the missing tail as zeros (missing bytes =
+`texc_swizzled_size - src_size`), and `texc_reswizzle` writes the stored
+rows. Elements the stored rows never reach come out as zeros, as on the
+console.
+
+### Wii U (GX2) mip chains
+
+KTGL's Wii U loader (Hyrule Warriors) hands GX2 the G1T bytes as the
+surface, with tile mode `DEFAULT`, which GX2 turns into 2D_TILED_THIN1.
+Mip 0 keeps that mode at any size, but a smaller mip that is narrower than
+one macro tile (32 x 16 elements for 64- and 128-bit elements) falls to
+1D_TILED_THIN1: 8x8-element micro tiles, row by row, padded to whole
+tiles. The mips follow mip 0 back to back, each at its addrlib base
+alignment. `texc_get_surface_layout` / `texc_unswizzle_mip` /
+`texc_reswizzle_mip` with `TEXC_SWIZZLE_WIIU` give that layout; the payload
+sizes of real Hyrule Warriors textures match it exactly (128x128 BC3 with
+3 mips = 21504 bytes: 16384 + 4096 + 1024), and each 1D mip decodes to its
+parent mip scaled down. Single-mip arrays and cube maps work too (faces
+use addrlib's per-slice bank rotation); GX2 keeps all slices of a level
+together, which the slice-major layout struct cannot describe, so several
+mips of several slices return `TEXC_ERR_UNSUPPORTED`.
+
+KTGL's loader would force some G1T formats to `LINEAR_ALIGNED` on Wii U
+(the BC formats `0x59`-`0x5F` among them, while `0x60`-`0x66` are tiled),
+but no known Wii U title ships textures in those formats, so that layout
+is not implemented.
 
 ### PS5 (Prospero) tiling and mip-chain surfaces
 
@@ -253,7 +319,8 @@ single mip (its block-padded raster, `texc_swizzled_size` bytes) and are
 exactly `texc_unswizzle_mip` on a one-level surface, so mip 0 of a chain
 can also be converted by pointing them at `lay.mips[0].offset`.
 `texc_get_surface_layout` also works for `TEXC_SWIZZLE_NONE` (mips back to
-back, mip 0 first); other modes return `TEXC_ERR_UNSUPPORTED`.
+back, mip 0 first) and `TEXC_SWIZZLE_WIIU` (below); other modes return
+`TEXC_ERR_UNSUPPORTED`.
 
 The implementation is derived from AMD addrlib (MIT). It is verified
 bit-for-bit against Sony's `AgcGpuAddress` host library across tile modes,

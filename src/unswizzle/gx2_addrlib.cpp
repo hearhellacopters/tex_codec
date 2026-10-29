@@ -1299,6 +1299,15 @@ bool compute_surface_info_mip0(uint32_t hw_format, uint32_t width,
                                uint32_t height, uint32_t tile_mode,
                                SurfaceInfo *out)
 {
+    return compute_surface_info(hw_format, width, height, 1, tile_mode, 0,
+                                out);
+}
+
+bool compute_surface_info(uint32_t hw_format, uint32_t width,
+                          uint32_t height, uint32_t slices,
+                          uint32_t tile_mode, uint32_t mip_level,
+                          SurfaceInfo *out)
+{
     if (!out)
         return false;
 
@@ -1309,17 +1318,23 @@ bool compute_surface_info_mip0(uint32_t hw_format, uint32_t width,
     SurfaceIn in = {};
     SurfaceOut o = {};
 
-    /* Mirrors getSurfaceInfo() from the reference for level 0, 2D (dim 1),
-     * no AA, slice 0. */
+    /* Mirrors getSurfaceInfo() from the reference: 2D (dim 1), no AA. For
+     * a mip level the BASE size goes in with inputBaseMap (flags bit 12)
+     * and addrlib derives the level's size, pow2 padding and tile mode
+     * (2D degrades to 1D once the level is narrower than a macro tile). */
     if (tile_mode == 16) {
         uint32_t blockSize = (hwFormat < 0x31 || hwFormat > 0x35) ? 1 : 4;
-        uint32_t w = ~(blockSize - 1) & (width + blockSize - 1);
+        uint32_t mw = umax(1, width >> mip_level);
+        uint32_t mh = umax(1, height >> mip_level);
+        uint32_t w = ~(blockSize - 1) & (mw + blockSize - 1);
 
         o.bpp = formatHwInfo[hwFormat * 4];
         o.pitch = w / blockSize;
-        o.height = (~(blockSize - 1) & (height + blockSize - 1)) / blockSize;
-        o.surfSize = (uint32_t)(((uint64_t)o.bpp * o.height * o.pitch) >> 3);
+        o.height = (~(blockSize - 1) & (mh + blockSize - 1)) / blockSize;
+        o.surfSize = (uint32_t)(((uint64_t)o.bpp * o.height * o.pitch) >> 3) *
+                     umax(1, slices);
         o.tileMode = 16;
+        o.baseAlign = 1;
     } else {
         in.size = 60;
         in.tileMode = tile_mode & 0x0F;
@@ -1329,10 +1344,10 @@ bool compute_surface_info_mip0(uint32_t hw_format, uint32_t width,
         in.numFrags = 1;
         in.width = umax(1, width);
         in.height = umax(1, height);
-        in.numSlices = 1;
+        in.numSlices = umax(1, slices);
         in.slice = 0;
-        in.mipLevel = 0;
-        in.flags.value = 1u << 12; /* level 0 */
+        in.mipLevel = mip_level;
+        in.flags.value = 1u << 12; /* inputBaseMap */
 
         computeSurfaceInfo(&in, &o);
 
@@ -1345,21 +1360,22 @@ bool compute_surface_info_mip0(uint32_t hw_format, uint32_t width,
     out->surf_size = o.surfSize;
     out->tile_mode = o.tileMode;
     out->bpp = o.bpp;
+    out->base_align = o.baseAlign ? o.baseAlign : 1;
     return out->pitch != 0 && out->height != 0 && out->surf_size != 0;
 }
 
-int64_t addr_from_coord(uint32_t x, uint32_t y, uint32_t bpp, uint32_t pitch,
-                        uint32_t height, uint32_t tile_mode,
+int64_t addr_from_coord(uint32_t x, uint32_t y, uint32_t slice, uint32_t bpp,
+                        uint32_t pitch, uint32_t height, uint32_t tile_mode,
                         uint32_t pipe_swizzle, uint32_t bank_swizzle)
 {
     uint32_t tm = (tile_mode == 16) ? 0 : tile_mode;
 
     if (tm == 0 || tm == 1)
-        return ((int64_t)y * pitch + x) * (bpp / 8);
+        return (((int64_t)slice * height + y) * pitch + x) * (bpp / 8);
     if (tm == 2 || tm == 3)
-        return computeSurfaceAddrFromCoordMicroTiled(x, y, 0, bpp, pitch,
+        return computeSurfaceAddrFromCoordMicroTiled(x, y, slice, bpp, pitch,
                                                      height, tm, false);
-    return computeSurfaceAddrFromCoordMacroTiled(x, y, 0, 0, bpp, pitch,
+    return computeSurfaceAddrFromCoordMacroTiled(x, y, slice, 0, bpp, pitch,
                                                  height, 1, tm, false,
                                                  pipe_swizzle, bank_swizzle);
 }

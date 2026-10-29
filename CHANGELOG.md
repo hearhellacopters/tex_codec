@@ -15,6 +15,61 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 `_MINOR` / `_PATCH`) and everything else derives from it - see
 [Versioning](README.md#versioning).
 
+## [1.8.0] - 2026-10-28
+
+### Changed
+- **`TEXC_SWIZZLE_DX12_64KB` rewritten** from Rise of the Ronin's own CPU
+  upload path. KTGL stores a 64 KB-tiled PC texture as row-major tiles of
+  the D3D12 standard shape for the element size (256x256 elements at 1
+  byte, 256x128 at 2, 128x128 at 4, 128x64 at 8, 64x64 at 16; BC1/BC4 =
+  512x256 pixels, BC2/3/5/6H/7 = 256x256), each tile stored in one piece
+  row by row, edge tiles only as wide or tall as what is left. The stored
+  size is therefore always the linear size, and a mip at most one tile
+  wide is plain linear. The old mode padded edge tiles, treated "64 KB or
+  less" as the linear case and used 128x128 tiles for every raw element
+  size. **Output and `texc_swizzled_size` change for this mode.**
+- **X360 byte order now depends on the element size**, following the
+  D3DFORMATs in Dynasty Warriors 8's G1T loader: 8in16 for DXT and 2- or
+  8-byte texels, 8in32 for 4- and 16-byte texels, none for 1-byte texels.
+  Every format used to be swapped 8in16, which scrambled 32-bit texels
+  such as RGBA8. **RGBA8 X360 output changes**; pass
+  `TEXC_X360_ENDIAN_8IN16` for the old order.
+
+### Added
+- `texc_x360_endian` (`TEXC_X360_ENDIAN_AUTO` / `NONE` / `8IN16` / `8IN32`
+  / `16IN32`), OR'ed into the X360 `arg` next to the pitch override
+  (`TEXC_X360_PITCH_MASK`, `TEXC_X360_ENDIAN_MASK`).
+- `TEXC_X360_LOADER_ROWS`: the X360 tiled side is the rows a G1T stores
+  (KTGL reads each one into the tiled surface at the surface pitch and never
+  writes the rest) instead of the whole surface. Unswizzle accepts shorter
+  input and reads the missing tail as zeros; the CLI prints how many bytes
+  were missing.
+- JS wrapper: `X360Endian`, `X360LoaderRows`. CLI: the new fields are
+  listed under `texc modes`.
+- **Wii U mip chains**: `texc_get_surface_layout`, `texc_unswizzle_mip` and
+  `texc_reswizzle_mip` accept `TEXC_SWIZZLE_WIIU` (JS `surfaceLayout` /
+  `unswizzleMip` / `reswizzleMip`, CLI `-m wiiu --mips N`). From Hyrule
+  Warriors' loader, which hands GX2 the G1T bytes with tile mode DEFAULT:
+  mip 0 stays 2D_TILED_THIN1 at any size, and a smaller mip narrower than
+  a macro tile is 1D_TILED_THIN1, padded to 8x8 micro tiles, each mip at its
+  addrlib base alignment after the last. Payload sizes of real textures
+  match exactly, and each 1D mip decodes to its parent mip scaled down.
+  These small mips were what the single-mip `WIIU` mode could not read.
+  Single-mip arrays and cube maps are supported too, with addrlib's
+  per-slice bank rotation (the sample cube maps decode smoother with it
+  than face by face); several mips of several slices return
+  `TEXC_ERR_UNSUPPORTED`, because GX2 stores each level's slices together.
+- `tools/ps4_oracle`: checks the PS4 mode against Sony's GpuAddress code,
+  run as a black box from a KTGL PS4 eboot (natively, through a
+  Windows-to-SysV thunk, since the code uses AVX). `verify` confirms
+  `Thin_1dThin` 8x8 Morton micro-tiles for every element size, the pitch
+  and size rules for `Thin_1dThin` and `Display_LinearAligned`, and that
+  `texc reswizzle -m ps4` matches Sony byte for byte (BC1/3/4/7, RGBA8).
+  Nothing from the eboot is in the repository.
+- Tests: DX12 64KB against a transcription of Ronin's upload loop
+  (RGBA8, BC1, BC4, BC7 at sizes up to 2049x2049); X360 byte order per
+  mode, stored-rows placement and short input; matching WASM smoke checks.
+
 ## [1.7.0] - 2026-10-27
 
 ### Added

@@ -371,7 +371,7 @@ static void usage(const char *cmd) {
 "  PS5: --arg auto recovers the tile mode from the input size (G1T mixes\n"
 "  4KB and 64KB blocks by texture size) or picks Koei's observed default\n"
 "  when reswizzling.\n"
-"  Whole-surface (mip chain) mode - PS5 and none:\n"
+"  Whole-surface (mip chain) mode - PS5, wiiu and none:\n"
 "    --mips <N> [--slices <N>]     the input/output is a complete tiled\n"
 "                                  surface of N mips (x slices)\n"
 "    --mip <N> [--slice <N>]       the level (and layer) to extract / insert\n"
@@ -696,6 +696,14 @@ static void cmd_swizzle(const options &oin, bool to_linear) {
         : texc_reswizzle(o.mode, o.format, o.width, o.height, src.data(),
                          src.size(), out.data(), out.size(), o.arg);
     if (rc != TEXC_OK) die_rc(to_linear ? "unswizzle" : "reswizzle", rc);
+    if (to_linear && o.mode == TEXC_SWIZZLE_X360 &&
+        (o.arg & TEXC_X360_LOADER_ROWS)) {
+        const size_t stored = texc_swizzled_size(o.mode, o.format, o.width,
+                                                 o.height, o.arg);
+        if (src.size() < stored)
+            fprintf(stderr, "note: %zu stored bytes missing, read as zeros\n",
+                    stored - src.size());
+    }
     write_file(o.output, out.data(), out.size());
 }
 
@@ -812,7 +820,10 @@ static void cmd_list(const std::string &what) {
                "         detect from the data size (unswizzle) / Koei's\n"
                "         observed choice (reswizzle: 64KB once mip 0 > 64KB);\n"
                "   psvita = raw bytes per pixel; wiiu = GX2 swizzle value;\n"
-               "   x360 = pitch override)\n");
+               "   x360 = pitch override | byte order 0x100 none, 0x200\n"
+               "          8in16, 0x300 8in32, 0x400 16in32 (0 = from the\n"
+               "          element size) | 0x10000 = input/output is the\n"
+               "          rows a G1T stores, not the whole tiled surface)\n");
     } else {
         for (int p = 1; p < TEXC_PROFILE_COUNT; p++)
             printf("  %-12s %u bytes/px\n",

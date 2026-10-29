@@ -357,6 +357,40 @@ try {
         "Switch 2 per-mode exports and helpers present");
 }
 
+/* ---- DX12 64KB tiles + X360 byte order / loader rows (1.8) ---- */
+{
+  // 129x2 RGBA8: a 128x2 tile, then the 1-pixel-wide edge tile.
+  const lin = new Uint8Array(129 * 2 * 4);
+  for (let i = 0; i < lin.length; i++) lin[i] = (i >> 2) & 0xff;
+  const t = await tex.swizzler.reswizzleDX12_64KB(TexFormat.RGBA8, lin, 129, 2);
+  check(t.length === lin.length && t[1024] === 128 && t[1028] === 1,
+        "DX12 64KB partial edge tile, stored at the linear size");
+  const { X360Endian, X360LoaderRows } = api;
+  const px = new Uint8Array(64 * 32 * 4);
+  for (let i = 0; i < px.length; i++) px[i] = (i * 13 + 5) & 0xff;
+  const none = await tex.swizzler.reswizzleX360(TexFormat.RGBA8, px, 64, 32,
+                                                X360Endian.NONE);
+  const auto = await tex.swizzler.reswizzleX360(TexFormat.RGBA8, px, 64, 32, 0);
+  check(auto.every((b, i) => b === none[(i & ~3) + 3 - (i & 3)]),
+        "X360 RGBA8 defaults to 8in32");
+  const rows = await tex.swizzler.reswizzleX360(TexFormat.BC1,
+      new Uint8Array(4096).fill(7), 128, 64, X360LoaderRows);
+  const back = await tex.swizzler.unswizzleX360(TexFormat.BC1,
+      rows.subarray(0, 1000), 128, 64, X360LoaderRows);
+  check(rows.length === 4096 && back.length === 4096,
+        "X360 loader rows: stored size, short input accepted");
+}
+
+/* ---- Wii U mip chain (1.8): small mips are 1D_TILED_THIN1 ---- */
+{
+  // Hyrule Warriors rain.g1t: 128x128 BC3, 3 mips = 21504 bytes.
+  const lay = await tex.swizzler.surfaceLayout(SwizzleMode.WIIU, TexFormat.BC3,
+                                               128, 128, 3);
+  check(lay.totalSize === 21504 && lay.mips[1].offset === 16384 &&
+        lay.mips[2].offset === 20480,
+        `Wii U 128x128 BC3 mip chain layout (${lay.totalSize} bytes)`);
+}
+
 /* ---- PS5 whole-surface (mip chain) layout ---- */
 {
   check(PS5TileMode.STANDARD_4KB === 5 && PS5TileMode.LEGACY === 0x100,

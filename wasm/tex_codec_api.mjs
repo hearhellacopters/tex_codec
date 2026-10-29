@@ -39,7 +39,7 @@
  * wrapper (or vice versa) is caught instead of silently misbehaving.
  * @type {string}
  */
-export const VERSION = "1.7.0";
+export const VERSION = "1.8.0";
 
 /* ------------------------------------------------------------------ enums */
 
@@ -99,13 +99,18 @@ export const SwizzleMode = Object.freeze({
    *  pixel (0 = the format's own size); G1T ships 8/16/24/32bpp raw Vita
    *  textures, so pass 3 for a 24bpp image. */
   PSVITA: 4,
-  /** `arg` = texel byte pitch override, 0 = default. */
+  /** `arg` = texel byte pitch override (low byte, 0 = element size) OR'ed
+   *  with an {@link X360Endian} (0 = from the element size) and optionally
+   *  {@link X360LoaderRows}. */
   X360: 5,
   PSP: 6,
   N3DS: 7,
   /** `arg` = GX2 swizzle value from the texture header (usually 0). */
   WIIU: 8,
-  /** Data of 64KB or less is stored linearly (pass-through). */
+  /** D3D12 64KB tiles as KTGL stores them: row-major tiles of the
+   *  standard shape for the element size, each stored as its own rows,
+   *  partial at the edges. Always the linear size; a mip at most one tile
+   *  wide is plain linear. */
   DX12_64KB: 9,
   /** Switch 2 (NVIDIA Orin) block-linear GOBs (G1T platform 0x18). Same
    *  `arg`, block heights and sizes as SWITCH; only the byte order inside
@@ -134,6 +139,30 @@ export const PS5TileMode = Object.freeze({
 /** `arg` value that makes SWITCH auto-select the GOB block height from the
  *  mip height, like the hardware. */
 export const SwitchBlockHeightAuto = 0xFFFFFFFF;
+
+/**
+ * X360 byte order, OR'ed into the `arg` of {@link SwizzleMode.X360}.
+ * Values match `texc_x360_endian`. AUTO follows KTGL's X360 loader: 8IN16
+ * for block formats and 2/8-byte texels, 8IN32 for 4/16-byte texels, NONE
+ * for 1-byte texels.
+ * @readonly @enum {number}
+ */
+export const X360Endian = Object.freeze({
+  AUTO: 0,
+  NONE: 0x100,
+  /** swap the bytes of each 16-bit word (the only order before 1.8) */
+  E8IN16: 0x200,
+  /** reverse each 32-bit word */
+  E8IN32: 0x300,
+  /** swap the 16-bit halves of each 32-bit word */
+  E16IN32: 0x400,
+});
+
+/** X360 `arg` flag: the tiled side is the rows a G1T stores (each read
+ *  into the tiled surface at its pitch, the rest never written) instead of
+ *  the whole surface. `swizzledSize` is then the stored size, and
+ *  `unswizzle` accepts shorter data, reading the missing tail as zeros. */
+export const X360LoaderRows = 0x10000;
 
 /**
  * Palette entry layouts for the paletted Wii formats (GX_TL_*). Values
@@ -516,7 +545,8 @@ export class TexSwizzler {
   /**
    * Describe a whole tiled surface holding a mip chain (and array slices /
    * cube faces): total size, block geometry and where every mip lives.
-   * Implemented for {@link SwizzleMode.PS5} and {@link SwizzleMode.NONE}.
+   * Implemented for {@link SwizzleMode.PS5}, {@link SwizzleMode.WIIU} (a
+   * mip chain, or several slices of one mip) and {@link SwizzleMode.NONE}.
    *
    * PS5: the smallest mips share one "mip tail" block stored FIRST, then
    * the rest follow in descending order (mip 0 is LAST); slices repeat the

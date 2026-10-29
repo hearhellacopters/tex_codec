@@ -49,7 +49,7 @@ extern "C" {
  * additions (new formats/functions are only ever APPENDED to the enums so
  * existing values stay stable), PATCH = fixes only. */
 #define TEXC_VERSION_MAJOR 1
-#define TEXC_VERSION_MINOR 7
+#define TEXC_VERSION_MINOR 8
 #define TEXC_VERSION_PATCH 0
 
 #define TEXC_VERSION_STRINGIZE_(x) #x
@@ -347,7 +347,11 @@ typedef enum texc_swizzle_mode {
     TEXC_SWIZZLE_PSP,             /* 16-byte x 8-row tiles                   */
     TEXC_SWIZZLE_3DS,             /* 8x8 Z-order tiles                       */
     TEXC_SWIZZLE_WIIU,            /* GX2 tiled (addrlib subset, see `arg`)   */
-    TEXC_SWIZZLE_DX12_64KB,       /* D3D12 64KB standard swizzle             */
+    TEXC_SWIZZLE_DX12_64KB,       /* D3D12 64KB tiles as KTGL stores them:
+                                   * row-major tiles of the standard shape
+                                   * for the element size, each stored as
+                                   * its own rows, partial at the edges -
+                                   * always the linear size               */
     TEXC_SWIZZLE_SWITCH2,         /* Switch 2 (NVIDIA Orin) block-linear GOB;
                                    * same `arg` and sizes as SWITCH, only the
                                    * byte order inside a GOB differs        */
@@ -375,6 +379,45 @@ typedef enum texc_ps5_tile_mode {
     TEXC_PS5_TILE_STANDARD_64KB = 9,     /* kStandard64KB: 64 KB blocks     */
     TEXC_PS5_TILE_LEGACY        = 0x100  /* tex_codec <= 1.5 behaviour      */
 } texc_ps5_tile_mode;
+
+/* X360 (Xenos) `arg` fields, OR'ed together:
+ *
+ *   bits 0-7   texel pitch override in bytes (0 = the format's element
+ *              size), as before 1.8.
+ *   bits 8-10  byte order, a texc_x360_endian. AUTO picks what Koei
+ *              Tecmo's X360 loader declares for the element size
+ *              (Dynasty Warriors 8, G1T format -> D3DFORMAT table):
+ *              8IN16 for block formats and 2- and 8-byte texels (16-bit
+ *              channels), 8IN32 for 4- and 16-byte texels, NONE for
+ *              1-byte texels. A 64-bit format with 32-bit channels
+ *              (32_32_FLOAT) needs 8IN32 explicitly.
+ *   TEXC_X360_LOADER_ROWS
+ *              the tiled side is the data as a G1T stores it rather than
+ *              the whole tiled surface. KTGL's loader reads ceil(h/bh)
+ *              rows of tightly packed ceil(w/bw) elements straight into the
+ *              locked tiled surface, one row per surface pitch
+ *              (align32(width in elements) * bytes), and never writes the
+ *              rest of the surface, which therefore reads as zeros. With
+ *              this flag texc_swizzled_size returns that stored size (the
+ *              linear size), texc_unswizzle accepts a SHORTER src and treats
+ *              the missing tail as zeros (missing bytes =
+ *              texc_swizzled_size - src_size), and texc_reswizzle writes
+ *              the stored rows. Elements the stored rows cannot reach come
+ *              out as zeros, as on the console. */
+typedef enum texc_x360_endian {
+    TEXC_X360_ENDIAN_AUTO   = 0x000,   /* from the element size          */
+    TEXC_X360_ENDIAN_NONE   = 0x100,   /* GPUENDIAN_NONE                 */
+    TEXC_X360_ENDIAN_8IN16  = 0x200,   /* GPUENDIAN_8IN16: swap bytes of
+                                        * each 16-bit word (pre-1.8
+                                        * behaviour for every format)    */
+    TEXC_X360_ENDIAN_8IN32  = 0x300,   /* GPUENDIAN_8IN32: reverse each
+                                        * 32-bit word                    */
+    TEXC_X360_ENDIAN_16IN32 = 0x400    /* GPUENDIAN_16IN32: swap the
+                                        * halves of each 32-bit word     */
+} texc_x360_endian;
+#define TEXC_X360_PITCH_MASK   0x000000FFu
+#define TEXC_X360_ENDIAN_MASK  0x00000700u
+#define TEXC_X360_LOADER_ROWS  0x00010000u
 
 /* Size in bytes of the swizzled representation (may exceed the linear size
  * because of tile padding). 0 if invalid.
@@ -410,7 +453,9 @@ TEXC_API size_t texc_unswizzled_size(texc_swizzle_mode mode,
  *                (texc_swizzled_size); for a whole mip chain see
  *                texc_get_surface_layout / texc_unswizzle_mip.
  *   WIIU       : GX2 swizzle value from the texture header (usually 0).
- *   X360       : texel pitch override in bytes, or 0 for default.
+ *   X360       : texel pitch override, byte order and stored-rows flag;
+ *                see texc_x360_endian. 0 = element-size pitch, byte order
+ *                from the element size, whole tiled surface.
  *   PSVITA     : for RAW (non-block) formats, bytes per pixel, or 0 to use
  *                the format's own size. G1T drives the Vita raw path from
  *                bitsPerPixel and ships 8/16/24/32bpp raw textures, so pass
@@ -463,9 +508,20 @@ TEXC_API int texc_decode_swizzled(texc_swizzle_mode mode, texc_format format,
  * sizes. texc_get_surface_layout describes that surface and
  * texc_unswizzle_mip / texc_reswizzle_mip address a single mip inside it.
  *
- * Currently implemented for TEXC_SWIZZLE_PS5 (STANDARD_256B / 4KB / 64KB)
- * and TEXC_SWIZZLE_NONE (mips stored back to back, mip 0 first). Other
- * modes return TEXC_ERR_UNSUPPORTED.
+ * Currently implemented for TEXC_SWIZZLE_PS5 (STANDARD_256B / 4KB / 64KB),
+ * TEXC_SWIZZLE_WIIU and TEXC_SWIZZLE_NONE (mips stored back to back, mip 0
+ * first). Other modes return TEXC_ERR_UNSUPPORTED.
+ *
+ * Wii U layout (GX2 via addrlib, as KTGL's loader sets it up: tile mode
+ * DEFAULT = 2D_TILED_THIN1, `arg` = the GX2 swizzle value): mip 0 at
+ * offset 0, then each further mip at its addrlib base alignment. A mip
+ * narrower than one macro tile (32 x 16 elements for 64- and 128-bit
+ * elements) is 1D_TILED_THIN1, padded to 8x8-element micro tiles; mip 0
+ * never is, however small. Checked against the payload sizes and decoded
+ * pixels of Hyrule Warriors G1Ts. Several slices (array, cube) are
+ * supported for a single mip; GX2 stores each mip level with all its
+ * slices together, which this slice-major layout cannot describe, so
+ * mip_count > 1 with slice_count > 1 returns TEXC_ERR_UNSUPPORTED.
  *
  * PS5 layout (AMD GFX10 "standard" swizzle, as computed by Sony's
  * AgcGpuAddress library): within one slice the smallest mips that fit in
