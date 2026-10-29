@@ -88,16 +88,22 @@ const format_info k_formats[TEXC_FORMAT_COUNT] = {
     /* WII_C4               */ { "WII_C4",                  8, 8, 32 },
     /* WII_C8               */ { "WII_C8",                  8, 4, 32 },
     /* WII_C14X2            */ { "WII_C14X2",               4, 4, 32 },
+    /* RAW8                 */ { "RAW8",                    1, 1, 1  },
+    /* RAW16                */ { "RAW16",                   1, 1, 2  },
+    /* RAW32                */ { "RAW32",                   1, 1, 4  },
+    /* RAW64                */ { "RAW64",                   1, 1, 8  },
+    /* RAW128               */ { "RAW128",                  1, 1, 16 },
 };
 
 inline bool valid_format(texc_format f) {
     return f > TEXC_FORMAT_INVALID && f < TEXC_FORMAT_COUNT;
 }
 
-enum class family { raw, bcn, etc, astc, pvrtc, atc, atlas, wii };
+enum class family { raw, bcn, etc, astc, pvrtc, atc, atlas, wii, element };
 
 family format_family(texc_format f) {
     if (f == TEXC_FORMAT_RGBA8) return family::raw;
+    if (f >= TEXC_FORMAT_RAW8 && f <= TEXC_FORMAT_RAW128) return family::element;
     if (f >= TEXC_FORMAT_BC1 && f <= TEXC_FORMAT_BC7) return family::bcn;
     if (f >= TEXC_FORMAT_ETC1_RGB && f <= TEXC_FORMAT_EAC_RG11_SIGNED) return family::etc;
     /* PICA200 ETC1 reuses the ETC codec with a 3DS-specific container. */
@@ -254,11 +260,13 @@ size_t texc_decoded_size(uint32_t width, uint32_t height) {
 }
 
 int texc_can_decode(texc_format format) {
-    return valid_format(format) ? 1 : 0;
+    return valid_format(format) && format_family(format) != family::element
+               ? 1 : 0;
 }
 
 int texc_can_encode(texc_format format) {
-    if (!valid_format(format)) return 0;
+    if (!valid_format(format) || format_family(format) == family::element)
+        return 0;
     return texc::wii_is_paletted(format) ? 0 : 1;   /* no palette generation */
 }
 
@@ -320,6 +328,8 @@ int texc_decode(texc_format format, const uint8_t *src, size_t src_size,
         return texc::atc_decode(format, src, src_size, width, height, dst);
     case family::wii:
         return texc::wii_decode(format, src, src_size, width, height, dst);
+    case family::element:
+        return TEXC_ERR_UNSUPPORTED;   /* channel layout unknown */
     case family::atlas: {
         /* Decode the double-height base image, keep the top half as RGB and
          * fold the bottom half's R channel into A (KTGL bHasAlphaAtlas). */
@@ -427,6 +437,8 @@ int texc_encode_ex(texc_format format, const uint8_t *src, size_t src_size,
         return texc::atc_encode(format, src, width, height, dst, opts);
     case family::wii:
         return texc::wii_encode(format, src, width, height, dst, opts);
+    case family::element:
+        return TEXC_ERR_UNSUPPORTED;
     case family::atlas: {
         /* Build the double-height base image: RGB on top, the alpha channel
          * replicated as grayscale below, then encode as the base codec. */
@@ -630,6 +642,46 @@ int texc_reswizzle_mip(texc_swizzle_mode mode, texc_format format,
     return texc::convert_mip(mode, format, width, height, mip_count,
                              slice_count, arg, mip, slice,
                              src, src_size, surface, surface_size, false);
+}
+
+int texc_get_volume_layout(texc_swizzle_mode mode, texc_format format,
+                           uint32_t width, uint32_t height, uint32_t depth,
+                           uint32_t mip_count, uint32_t arg,
+                           texc_surface_layout *out) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format) ||
+        !out || !width || !height || !depth || !mip_count)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    return texc::volume_layout(mode, format, width, height, depth, mip_count,
+                               arg, out);
+}
+
+int texc_unswizzle_volume_mip(texc_swizzle_mode mode, texc_format format,
+                              uint32_t width, uint32_t height, uint32_t depth,
+                              uint32_t mip_count, uint32_t arg, uint32_t mip,
+                              const uint8_t *surface, size_t surface_size,
+                              uint8_t *dst, size_t dst_size) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format) ||
+        !surface || !dst || !width || !height || !depth || !mip_count)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    return texc::convert_volume_mip(mode, format, width, height, depth,
+                                    mip_count, arg, mip, surface,
+                                    surface_size, dst, dst_size, true);
+}
+
+int texc_reswizzle_volume_mip(texc_swizzle_mode mode, texc_format format,
+                              uint32_t width, uint32_t height, uint32_t depth,
+                              uint32_t mip_count, uint32_t arg, uint32_t mip,
+                              const uint8_t *src, size_t src_size,
+                              uint8_t *surface, size_t surface_size) {
+    if (mode < 0 || mode >= TEXC_SWIZZLE_MODE_COUNT || !valid_format(format) ||
+        !surface || !src || !width || !height || !depth || !mip_count)
+        return TEXC_ERR_INVALID_ARG;
+    if (!swizzle_target(format, height)) return TEXC_ERR_INVALID_ARG;
+    return texc::convert_volume_mip(mode, format, width, height, depth,
+                                    mip_count, arg, mip, src, src_size,
+                                    surface, surface_size, false);
 }
 
 int texc_decode_swizzled(texc_swizzle_mode mode, texc_format format,

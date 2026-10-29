@@ -34,8 +34,25 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
   Every format used to be swapped 8in16, which scrambled 32-bit texels
   such as RGBA8. **RGBA8 X360 output changes**; pass
   `TEXC_X360_ENDIAN_8IN16` for the old order.
+- **PS4 pitch for 1- and 2-byte texels**: the pitch now grows by 8
+  elements until a slice is a multiple of 256 bytes, as Sony's GpuAddress
+  does (checked with `tools/ps4_oracle`, which now compares every element
+  size byte for byte). Only reachable through the new `RAW8` / `RAW16`;
+  every other format's size is unchanged.
+- **X360 tiled size is aligned to 4 KB**, which 1- and 2-byte texels need
+  for the address function to cover the image (Xenia's guest layout);
+  unchanged for elements of 4 bytes or more.
 
 ### Added
+- **Raw element formats** `TEXC_FORMAT_RAW8`, `RAW16`, `RAW32`, `RAW64`,
+  `RAW128` (1, 2, 4, 8, 16 bytes a texel; appended to the enum, values
+  59-63), for moving uncompressed data of any width (R8, RG8, RGBA16F,
+  RGBA32F, ...) through every swizzle mode, the mip-chain API and PS5
+  tile-mode detection, each platform applying its own element-size rules.
+  They have no codec: `texc_decode` / `texc_encode` return
+  `TEXC_ERR_UNSUPPORTED` and `texc_can_decode` / `texc_can_encode` report
+  0. JS: `TexFormat.RAW8` ... `RAW128`, with `encodedSize*` helpers but no
+  decode / encode helpers.
 - `texc_x360_endian` (`TEXC_X360_ENDIAN_AUTO` / `NONE` / `8IN16` / `8IN32`
   / `16IN32`), OR'ed into the X360 `arg` next to the pitch override
   (`TEXC_X360_PITCH_MASK`, `TEXC_X360_ENDIAN_MASK`).
@@ -46,6 +63,41 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
   were missing.
 - JS wrapper: `X360Endian`, `X360LoaderRows`. CLI: the new fields are
   listed under `texc modes`.
+- **Volume textures** (G1T type 2): `texc_get_volume_layout`,
+  `texc_unswizzle_volume_mip` and `texc_reswizzle_volume_mip`, and a
+  `depth` field in `texc_mip_layout` (in what was its padding, so the
+  struct and its JS offsets are unchanged; 1 for 2D layouts). Implemented
+  for `TEXC_SWIZZLE_PS4` (GNM `Thick_1dThick` for 1- to 8-byte raw
+  texels, `Thin_1dThin` a slice at a time for BC and RGBA32F, as KTGL's
+  volume setup asks GNM; byte for byte against Sony's GpuAddress in
+  `tests/ps4_volume_kat.h`, and all 779 Nioh 2 volumes match KTGL's sizes),
+  `TEXC_SWIZZLE_SWITCH` / `SWITCH2` (NVN's 3D block-linear layout: blocks
+  one GOB wide and tall and up to 16 GOBs deep, checked byte for byte
+  against tegra_swizzle and on Pokopia's and Age of Calamity's volumes) and
+  `TEXC_SWIZZLE_NONE`.
+- **PS4 mip chains**: `texc_get_surface_layout` / `texc_unswizzle_mip` /
+  `texc_reswizzle_mip` accept `TEXC_SWIZZLE_PS4`. GNM pads a chain of
+  several mips at any size: each mip's width is mip 0's width rounded up to
+  a power of two and halved per level, its height its own rounded up to a
+  power of two. Fitted against KTGL's layout code on 1,000 random chains
+  and checked by `tools/ps4_oracle verify` (80 random chains through
+  `texc`). A chain with several slices returns `TEXC_ERR_UNSUPPORTED`. JS: the `depth` option of
+  `surfaceLayout` / `unswizzleMip` / `reswizzleMip` and `MipLayout.depth`;
+  CLI: `--depth N` with `--mips`.
+- **Switch / Switch 2 mip chains and arrays**: `texc_get_surface_layout`,
+  `texc_unswizzle_mip` and `texc_reswizzle_mip` accept
+  `TEXC_SWIZZLE_SWITCH` and `SWITCH2` (JS `surfaceLayout` / `unswizzleMip`
+  / `reswizzleMip` with `arg: SwitchBlockHeightAuto`; CLI `-m switch
+  --mips N --slices N --arg auto`). Age of Calamity's loader reads a tiled
+  G1T payload straight into NVN texture storage, so the layout is NVN's:
+  mips back to back in each slice, each at its own block height, every
+  slice padded to a block of GOBs. Checked byte for byte against
+  tegra_swizzle's `swizzle_surface` (`tests/switch_surface_kat.h`, 15
+  cases, generator in `tools/switch_oracle`) and against the payload of
+  every tiled Switch sample; a 1024x1024 BC1 with 9 mips is 704,512 bytes a
+  slice. The same loader decides tiled versus linear by G1T format alone,
+  so a Switch texture stored at its linear size is a linear format
+  (`0x59`-`0x5F`, `0x7D`), not a tiled one missing its padding.
 - **Wii U mip chains**: `texc_get_surface_layout`, `texc_unswizzle_mip` and
   `texc_reswizzle_mip` accept `TEXC_SWIZZLE_WIIU` (JS `surfaceLayout` /
   `unswizzleMip` / `reswizzleMip`, CLI `-m wiiu --mips N`). From Hyrule
@@ -64,7 +116,8 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
   Windows-to-SysV thunk, since the code uses AVX). `verify` confirms
   `Thin_1dThin` 8x8 Morton micro-tiles for every element size, the pitch
   and size rules for `Thin_1dThin` and `Display_LinearAligned`, and that
-  `texc reswizzle -m ps4` matches Sony byte for byte (BC1/3/4/7, RGBA8).
+  `texc reswizzle -m ps4` matches Sony byte for byte (BC1/3/4/7, RGBA8 and
+  RAW8/16/64/128).
   Nothing from the eboot is in the repository.
 - Tests: DX12 64KB against a transcription of Ronin's upload loop
   (RGBA8, BC1, BC4, BC7 at sizes up to 2049x2049); X360 byte order per
@@ -73,14 +126,14 @@ The version is declared in `include/tex_codec.h` (`TEXC_VERSION_MAJOR` /
 ## [1.7.0] - 2026-10-27
 
 ### Added
-- **Switch 2 (NVIDIA Orin) block-linear layout**: `TEXC_SWIZZLE_SWITCH2`
-  (G1T platform `0x18`). It shares everything with `TEXC_SWIZZLE_SWITCH`
-  except the byte order inside each 64-byte x 8-row GOB, where two address
-  bits are swapped: the same `arg` (block height log2 or `0xFFFFFFFF` for
-  auto), block-height rules and tiled sizes. Taken from the `isOrin` path
-  of ScanMountGoat's `tegra_swizzle`, and checked against that library in
-  `tests/switch2_kat.h` for both GPUs (24 cases over RGBA8, BC1, BC7 and
-  ASTC 8x8 at even and odd sizes).
+- **Switch 2 (NVIDIA Orin) block-linear layout**: `TEXC_SWIZZLE_SWITCH2`,
+  It shares everything with `TEXC_SWIZZLE_SWITCH` except the byte order 
+  inside each 64-byte x 8-row GOB, where two address bits are swapped: 
+  the same `arg` (block height log2 or `0xFFFFFFFF` for auto), block-height 
+  rules and tiled sizes. Taken from the `isOrin` path of ScanMountGoat's 
+  `tegra_swizzle`, and checked against that library in `tests/switch2_kat.h` 
+  for both GPUs (24 cases over RGBA8, BC1, BC7 and ASTC 8x8 at even and 
+  odd sizes).
 - WASM: `_texc_unswizzle_switch2`, `_texc_reswizzle_switch2`,
   `_texc_swizzle_switch2`, `_texc_swizzled_size_switch2`. JS wrapper:
   `SwizzleMode.SWITCH2` and the generated `unswizzleSwitch2`,

@@ -53,6 +53,19 @@ int convert_mip(texc_swizzle_mode mode, texc_format fmt,
                 const uint8_t *src, size_t src_size,
                 uint8_t *dst, size_t dst_size, bool dir_to_linear);
 
+/* Volume (3D) surfaces; see texc_get_volume_layout. */
+int volume_layout(texc_swizzle_mode mode, texc_format fmt,
+                  uint32_t width, uint32_t height, uint32_t depth,
+                  uint32_t mips, uint32_t arg, texc_surface_layout *out);
+
+/* Every slice of one volume mip between the surface and linear data,
+ * slice-major on the linear side. */
+int convert_volume_mip(texc_swizzle_mode mode, texc_format fmt,
+                       uint32_t width, uint32_t height, uint32_t depth,
+                       uint32_t mips, uint32_t arg, uint32_t mip,
+                       const uint8_t *src, size_t src_size,
+                       uint8_t *dst, size_t dst_size, bool dir_to_linear);
+
 } /* namespace texc */
 
 #endif /* TEXC_UNSWIZZLE_H */

@@ -37,6 +37,9 @@ export declare const TexFormat: Readonly<{
   WII_I4: 48; WII_I8: 49; WII_IA4: 50; WII_IA8: 51; WII_RGB565: 52;
   WII_RGB5A3: 53; WII_RGBA8: 54; WII_CMPR: 55;
   WII_C4: 56; WII_C8: 57; WII_C14X2: 58;
+  /** Raw texels by element size (1/2/4/8/16 bytes) for the swizzle modes
+   *  and mip-chain API only; no decode / encode helpers. */
+  RAW8: 59; RAW16: 60; RAW32: 61; RAW64: 62; RAW128: 63;
 }>;
 export type TexFormatValue = (typeof TexFormat)[keyof typeof TexFormat];
 
@@ -82,6 +85,8 @@ export interface MipLayout {
   size: number;
   inTail: boolean;
   tailX: number; tailY: number;
+  /** slices of a volume mip (its size covers all of them); 1 for 2D */
+  depth: number;
 }
 /** A whole tiled surface: mip chain x slices. PS5: the mip tail block is
  *  stored first, then mips in descending order (mip 0 last). */
@@ -94,7 +99,12 @@ export interface SurfaceLayout {
   sliceSize: number; totalSize: number;
   mips: MipLayout[];
 }
-export interface SurfaceOptions { sliceCount?: number; arg?: number }
+export interface SurfaceOptions {
+  sliceCount?: number; arg?: number;
+  /** > 1: a volume texture (NONE, PS4, SWITCH, SWITCH2); mips then carry every
+   *  slice, slice-major on the linear side */
+  depth?: number;
+}
 export interface MipOptions extends SurfaceOptions { slice?: number }
 
 /** `arg` value that makes SWITCH auto-select the GOB block height. */
@@ -333,16 +343,18 @@ export interface EncodeOptions {
  * mode with prettified names (PS4, PS5, Switch, Switch2, PSVita, X360, PSP, N3DS,
  * WiiU, DX12_64KB), e.g. unswizzlePS4 / reswizzleSwitch. */
 export type FormatKey = Exclude<keyof typeof TexFormat, "INVALID">;
+/** Formats with a codec: every FormatKey except the RAW element formats. */
+export type CodecFormatKey = Exclude<FormatKey, `RAW${string}`>;
 export type SwizzleModeName =
     "PS4" | "PS5" | "Switch" | "Switch2" | "PSVita" | "X360" | "PSP" | "N3DS" | "WiiU" |
     "DX12_64KB";
 
 type PerFormatDecode = {
-  [K in FormatKey as `decode${K}`]:
+  [K in CodecFormatKey as `decode${K}`]:
       (data: Uint8Array, width: number, height: number) => Promise<Uint8Array>;
 };
 type PerFormatDecodeF32 = {
-  [K in FormatKey as `decodeF32${K}`]:
+  [K in CodecFormatKey as `decodeF32${K}`]:
       (data: Uint8Array, width: number,
        height: number) => Promise<Float32Array>;
 };
@@ -352,7 +364,7 @@ type PerModeDecodeSwizzled = {
        height: number, arg?: number) => Promise<Uint8Array>;
 };
 type PerFormatEncode = {
-  [K in FormatKey as `encode${K}`]:
+  [K in CodecFormatKey as `encode${K}`]:
       (rgba: Uint8Array, width: number, height: number,
        options?: EncodeOptions) => Promise<Uint8Array>;
 };
@@ -430,8 +442,9 @@ export declare class TexSwizzler {
   swizzle(mode: SwizzleModeValue | number, format: TexFormatValue | number,
           data: Uint8Array, width: number, height: number,
           arg?: number): Promise<Uint8Array>;
-  /** Layout of a whole tiled surface (mip chain x slices). PS5, WIIU (a mip
-   *  chain, or several slices of one mip) and NONE. */
+  /** Layout of a whole tiled surface (mip chain x slices). PS5, PS4, SWITCH /
+   *  SWITCH2 (arg: SwitchBlockHeightAuto for NVN's own block height), WIIU (a
+   *  mip chain, or several slices of one mip) and NONE. */
   surfaceLayout(mode: SwizzleModeValue | number,
                 format: TexFormatValue | number, width: number,
                 height: number, mipCount: number,

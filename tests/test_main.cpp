@@ -17,6 +17,8 @@
 #include "../tools/ps5_oracle/kat_common.h"
 #include "ps5_kat.h"
 #include "switch2_kat.h"
+#include "switch_surface_kat.h"
+#include "ps4_volume_kat.h"
 
 static int g_failures = 0;
 
@@ -986,9 +988,9 @@ static void test_ps5_layout(void) {
         CHECK(texc_get_surface_layout(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 64, 64,
                                       1, 1, 3, &lay) == TEXC_ERR_UNSUPPORTED,
               "unknown PS5 tile mode accepted");
-        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_BC7, 64,
+        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_PSP, TEXC_FORMAT_BC7, 64,
                                       64, 1, 1, 0, &lay) == TEXC_ERR_UNSUPPORTED,
-              "Switch chain layout unexpectedly supported");
+              "PSP chain layout unexpectedly supported");
         CHECK(texc_swizzled_size(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 64, 64, 3) == 0,
               "swizzled_size with bad tile mode");
     }
@@ -1171,6 +1173,120 @@ static void test_dx12_64kb(void) {
     printf("  DX12 64KB tile checks done\n");
 }
 
+/* Switch / Switch 2 whole surfaces against tegra_swizzle's swizzle_surface
+ * (tests/switch_surface_kat.h): every mip of every layer is reswizzled from
+ * the same linear input into one surface, which must hash the same.
+ * Volumes (depth > 1) go through the volume API. */
+static void test_switch_surface(void) {
+    for (const switch_surface_kat &k : k_switch_surface_kat) {
+        texc_surface_layout lay;
+        const char *fn = texc_format_name(k.format);
+        const bool vol = k.depth > 1;
+        int rc = vol ? texc_get_volume_layout(k.mode, k.format, k.w, k.h,
+                                              k.depth, k.mips, 0xFFFFFFFFu, &lay)
+                     : texc_get_surface_layout(k.mode, k.format, k.w, k.h,
+                                               k.mips, k.layers, 0xFFFFFFFFu,
+                                               &lay);
+        CHECK(rc == TEXC_OK && lay.total_size == k.total_size,
+              "switch surface %s %ux%ux%u x%u mips x%u layers mode %d: total "
+              "%llu != %llu", fn, k.w, k.h, k.depth, k.mips, k.layers,
+              (int)k.mode,
+              (unsigned long long)lay.total_size,
+              (unsigned long long)k.total_size);
+        if (rc != TEXC_OK || lay.total_size != k.total_size) continue;
+        size_t lin = 0;
+        for (uint32_t m = 0; m < k.mips; ++m)
+            lin += (size_t)lay.mips[m].width * lay.mips[m].height *
+                   lay.mips[m].depth * lay.element_bytes;
+        std::vector<uint8_t> src(lin * k.layers), surf(lay.total_size, 0);
+        kat_fill(src.data(), src.size(), k.seed);
+        size_t off = 0;
+        bool ok = true;
+        for (uint32_t s = 0; s < k.layers; ++s)
+            for (uint32_t m = 0; m < k.mips; ++m) {
+                const size_t n = (size_t)lay.mips[m].width *
+                                 lay.mips[m].height * lay.mips[m].depth *
+                                 lay.element_bytes;
+                std::vector<uint8_t> back(n);
+                if (vol) {
+                    ok &= texc_reswizzle_volume_mip(
+                              k.mode, k.format, k.w, k.h, k.depth, k.mips,
+                              0xFFFFFFFFu, m, src.data() + off, n, surf.data(),
+                              surf.size()) == TEXC_OK;
+                    ok &= texc_unswizzle_volume_mip(
+                              k.mode, k.format, k.w, k.h, k.depth, k.mips,
+                              0xFFFFFFFFu, m, surf.data(), surf.size(),
+                              back.data(), n) == TEXC_OK;
+                } else {
+                    ok &= texc_reswizzle_mip(k.mode, k.format, k.w, k.h,
+                                             k.mips, k.layers, 0xFFFFFFFFu, m,
+                                             s, src.data() + off, n,
+                                             surf.data(), surf.size()) ==
+                          TEXC_OK;
+                    ok &= texc_unswizzle_mip(k.mode, k.format, k.w, k.h,
+                                             k.mips, k.layers, 0xFFFFFFFFu, m,
+                                             s, surf.data(), surf.size(),
+                                             back.data(), n) == TEXC_OK;
+                }
+                ok &= memcmp(back.data(), src.data() + off, n) == 0;
+                off += n;
+            }
+        const uint64_t h = kat_fnv(kat_fnv_init(), surf.data(), surf.size());
+        CHECK(ok && h == k.hash,
+              "switch surface %s %ux%u x%u x%u mode %d: hash %016llx != "
+              "tegra_swizzle %016llx", fn, k.w, k.h, k.mips, k.layers,
+              (int)k.mode, (unsigned long long)h, (unsigned long long)k.hash);
+    }
+    printf("  Switch / Switch 2 surface checks done (%zu tegra_swizzle cases)\n",
+           sizeof(k_switch_surface_kat) / sizeof(k_switch_surface_kat[0]));
+}
+
+/* PS4 volumes against Sony's GpuAddress (tests/ps4_volume_kat.h): the
+ * whole volume's size from KTGL's own volume setup, and mip 0's tiled bytes
+ * (Thick_1dThick for raw texels, Thin_1dThin a slice at a time for BC and
+ * RGBA32F). */
+static void test_ps4_volume(void) {
+    for (const ps4_volume_kat &k : k_ps4_volume_kat) {
+        const char *fn = texc_format_name(k.format);
+        texc_surface_layout lay;
+        int rc = texc_get_volume_layout(TEXC_SWIZZLE_PS4, k.format, k.w, k.h,
+                                        k.depth, k.mips, 0, &lay);
+        CHECK(rc == TEXC_OK && lay.total_size == k.total_size &&
+                  lay.mips[0].size == k.mip0_size,
+              "PS4 volume %s %ux%ux%u x%u: total %llu / mip0 %llu, Sony %llu "
+              "/ %llu", fn, k.w, k.h, k.depth, k.mips,
+              (unsigned long long)lay.total_size,
+              (unsigned long long)lay.mips[0].size,
+              (unsigned long long)k.total_size,
+              (unsigned long long)k.mip0_size);
+        if (rc != TEXC_OK || lay.total_size != k.total_size) continue;
+        const size_t n = (size_t)lay.mips[0].width * lay.mips[0].height *
+                         lay.mips[0].depth * lay.element_bytes;
+        std::vector<uint8_t> src(n), surf(lay.total_size, 0), back(n);
+        kat_fill(src.data(), n, k.seed);
+        rc = texc_reswizzle_volume_mip(TEXC_SWIZZLE_PS4, k.format, k.w, k.h,
+                                       k.depth, k.mips, 0, 0, src.data(), n,
+                                       surf.data(), surf.size());
+        const uint64_t h = kat_fnv(kat_fnv_init(), surf.data(),
+                                   (size_t)k.mip0_size);
+        CHECK(rc == TEXC_OK && h == k.hash,
+              "PS4 volume %s %ux%ux%u: mip 0 hash %016llx != GpuAddress "
+              "%016llx", fn, k.w, k.h, k.depth, (unsigned long long)h,
+              (unsigned long long)k.hash);
+        rc = texc_unswizzle_volume_mip(TEXC_SWIZZLE_PS4, k.format, k.w, k.h,
+                                       k.depth, k.mips, 0, 0, surf.data(),
+                                       surf.size(), back.data(), n);
+        CHECK(rc == TEXC_OK && back == src, "PS4 volume %s %ux%ux%u roundtrip",
+              fn, k.w, k.h, k.depth);
+    }
+    texc_surface_layout lay;
+    CHECK(texc_get_volume_layout(TEXC_SWIZZLE_WIIU, TEXC_FORMAT_BC1, 64, 64, 8,
+                                 1, 0, &lay) == TEXC_ERR_UNSUPPORTED,
+          "Wii U volumes report unsupported");
+    printf("  PS4 volume checks done (%zu GpuAddress cases)\n",
+           sizeof(k_ps4_volume_kat) / sizeof(k_ps4_volume_kat[0]));
+}
+
 /* Wii U whole surfaces. The totals are the payload sizes of real Hyrule
  * Warriors G1Ts (rain.g1t, C_ZELDA_1.g1t, GalleryEnvMap.g1t): mip 0 stays
  * 2D_TILED_THIN1, smaller mips fall to 1D_TILED_THIN1, single-mip cubes
@@ -1240,6 +1356,97 @@ static void test_wiiu_layout(void) {
                                   6, 0, &lay) == TEXC_ERR_UNSUPPORTED,
           "WIIU mips x slices rejected");
     printf("  Wii U surface layout checks done\n");
+}
+
+static std::vector<uint8_t> x360_tile(texc_format f, uint32_t w, uint32_t h,
+                                      const std::vector<uint8_t> &lin,
+                                      uint32_t arg);
+
+/* RAW8..RAW128: element formats that every swizzle mode accepts. */
+static void test_raw_elements(void) {
+    const texc_format raws[] = { TEXC_FORMAT_RAW8, TEXC_FORMAT_RAW16,
+                                 TEXC_FORMAT_RAW32, TEXC_FORMAT_RAW64,
+                                 TEXC_FORMAT_RAW128 };
+    const texc_swizzle_mode modes[] = {
+        TEXC_SWIZZLE_NONE, TEXC_SWIZZLE_PS4, TEXC_SWIZZLE_PS5,
+        TEXC_SWIZZLE_SWITCH, TEXC_SWIZZLE_PSVITA, TEXC_SWIZZLE_X360,
+        TEXC_SWIZZLE_PSP, TEXC_SWIZZLE_3DS, TEXC_SWIZZLE_WIIU,
+        TEXC_SWIZZLE_DX12_64KB, TEXC_SWIZZLE_SWITCH2,
+    };
+    for (texc_format f : raws) {
+        uint32_t bw, bh, bb;
+        texc_block_dims(f, &bw, &bh, &bb);
+        CHECK(bw == 1 && bh == 1 && texc_encoded_size(f, 3, 5) == 15u * bb,
+              "%s element size", texc_format_name(f));
+        CHECK(!texc_can_decode(f) && !texc_can_encode(f),
+              "%s reports no codec", texc_format_name(f));
+        std::vector<uint8_t> buf(4 * 4 * 16);
+        CHECK(texc_decode(f, buf.data(), buf.size(), 4, 4, buf.data(),
+                          buf.size()) == TEXC_ERR_UNSUPPORTED,
+              "%s decode rejected", texc_format_name(f));
+        for (texc_swizzle_mode m : modes) {
+            const bool gob = m == TEXC_SWIZZLE_SWITCH || m == TEXC_SWIZZLE_SWITCH2;
+            test_swizzle_roundtrip(m, f, 256, 128, gob ? 0xFFFFFFFFu : 0);
+            if (m != TEXC_SWIZZLE_PSVITA)   /* Vita raw is lossy off 32px */
+                test_swizzle_roundtrip(m, f, 37, 23, gob ? 0xFFFFFFFFu : 0);
+        }
+        texc_surface_layout lay;
+        CHECK(texc_get_surface_layout(TEXC_SWIZZLE_PS5, f, 256, 64, 5, 2, 0,
+                                      &lay) == TEXC_OK &&
+                  texc_get_surface_layout(TEXC_SWIZZLE_WIIU, f, 256, 64, 5, 1,
+                                          0, &lay) == TEXC_OK,
+              "%s mip-chain layouts", texc_format_name(f));
+    }
+    /* RAW32 tiles exactly like RGBA8 */
+    std::vector<uint8_t> lin(64 * 32 * 4), a(texc_swizzled_size(
+        TEXC_SWIZZLE_PS5, TEXC_FORMAT_RGBA8, 64, 32, 0)), b(a.size());
+    kat_fill(lin.data(), lin.size(), 32);
+    texc_reswizzle(TEXC_SWIZZLE_PS5, TEXC_FORMAT_RGBA8, 64, 32, lin.data(),
+                   lin.size(), a.data(), a.size(), 0);
+    texc_reswizzle(TEXC_SWIZZLE_PS5, TEXC_FORMAT_RAW32, 64, 32, lin.data(),
+                   lin.size(), b.data(), b.size(), 0);
+    CHECK(a == b, "RAW32 == RGBA8 tiling");
+    /* PS4 pitch grows until a slice is a multiple of 256 bytes (Sony's
+     * GpuAddress, tools/ps4_oracle): 37x23 -> 64 / 48 elements wide. */
+    CHECK(texc_swizzled_size(TEXC_SWIZZLE_PS4, TEXC_FORMAT_RAW8, 37, 23, 0) ==
+              64 * 24, "PS4 RAW8 pitch");
+    CHECK(texc_swizzled_size(TEXC_SWIZZLE_PS4, TEXC_FORMAT_RAW16, 37, 23, 0) ==
+              48 * 24 * 2, "PS4 RAW16 pitch");
+    /* X360 levels are 4 KB aligned: 1-byte texels need it to cover the
+     * image (37x23 RAW8 = 64x32 elements = 2 KB -> 4 KB) */
+    CHECK(texc_swizzled_size(TEXC_SWIZZLE_X360, TEXC_FORMAT_RAW8, 37, 23, 0) ==
+              4096, "X360 RAW8 4 KB alignment");
+    /* Nioh 2: 128x16 RGBA16F array layers are 16384 bytes apart */
+    CHECK(texc_swizzled_size(TEXC_SWIZZLE_PS4, TEXC_FORMAT_RAW64, 128, 16, 0) ==
+              16384, "PS4 RAW64 128x16 layer");
+    /* block linear is byte based: RAW64 512 wide == RAW32 1024 wide */
+    {
+        std::vector<uint8_t> l(512 * 64 * 8), t1, t2;
+        kat_fill(l.data(), l.size(), 64);
+        t1.resize(texc_swizzled_size(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_RAW64,
+                                     512, 64, 0xFFFFFFFFu));
+        t2.resize(texc_swizzled_size(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_RAW32,
+                                     1024, 64, 0xFFFFFFFFu));
+        texc_reswizzle(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_RAW64, 512, 64,
+                       l.data(), l.size(), t1.data(), t1.size(), 0xFFFFFFFFu);
+        texc_reswizzle(TEXC_SWIZZLE_SWITCH, TEXC_FORMAT_RAW32, 1024, 64,
+                       l.data(), l.size(), t2.data(), t2.size(), 0xFFFFFFFFu);
+        CHECK(!t1.empty() && t1 == t2, "Switch RAW64 == RAW32 at double width");
+    }
+    /* X360 byte order by element size: 8in16 for RAW64, 8in32 for RAW128 */
+    {
+        std::vector<uint8_t> l(32 * 32 * 16);
+        kat_fill(l.data(), l.size(), 360);
+        for (int k = 0; k < 2; ++k) {
+            const texc_format f = k ? TEXC_FORMAT_RAW128 : TEXC_FORMAT_RAW64;
+            const uint32_t e = k ? TEXC_X360_ENDIAN_8IN32 : TEXC_X360_ENDIAN_8IN16;
+            const size_t n = (size_t)32 * 32 * (k ? 16 : 8);
+            std::vector<uint8_t> src(l.begin(), l.begin() + n);
+            CHECK(x360_tile(f, 32, 32, src, 0) == x360_tile(f, 32, 32, src, e),
+                  "X360 AUTO byte order for %s", texc_format_name(f));
+        }
+    }
+    printf("  RAW8..RAW128 element format checks done\n");
 }
 
 /* X360: byte order per element size (Dynasty Warriors 8's G1T format ->
@@ -1458,6 +1665,9 @@ int main(void) {
     test_dx12_64kb();
     test_x360();
     test_wiiu_layout();
+    test_switch_surface();
+    test_ps4_volume();
+    test_raw_elements();
     /* the pre-1.6 PS5 layout stays reachable and invertible */
     test_swizzle_roundtrip(TEXC_SWIZZLE_PS5, TEXC_FORMAT_BC7, 256, 128,
                            TEXC_PS5_TILE_LEGACY);

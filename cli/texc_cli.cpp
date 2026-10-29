@@ -303,6 +303,7 @@ struct options {
     uint32_t arg = 0;
     uint32_t mips = 0;              /* >0: whole-surface (mip chain) mode  */
     uint32_t slices = 1;
+    uint32_t depth = 1;
     uint32_t mip = 0, slice = 0;
     uint32_t alpha_threshold = 128;
     texc_pixel_profile src_profile = TEXC_PROFILE_INVALID;
@@ -371,9 +372,12 @@ static void usage(const char *cmd) {
 "  PS5: --arg auto recovers the tile mode from the input size (G1T mixes\n"
 "  4KB and 64KB blocks by texture size) or picks Koei's observed default\n"
 "  when reswizzling.\n"
-"  Whole-surface (mip chain) mode - PS5, wiiu and none:\n"
+"  Whole-surface (mip chain) mode - PS5, ps4, switch, switch2, wiiu and none:\n"
 "    --mips <N> [--slices <N>]     the input/output is a complete tiled\n"
 "                                  surface of N mips (x slices)\n"
+"    --depth <N>                   a volume N slices deep (none, ps4,\n"
+"                                  switch, switch2): --mip reads/writes\n"
+"                                  every slice of that mip, slice-major\n"
 "    --mip <N> [--slice <N>]       the level (and layer) to extract / insert\n"
 "    --surface <file>              reswizzle: existing surface to update\n"
 "                                  (default: start from zeros)\n", c.c_str(),
@@ -447,6 +451,7 @@ static options parse_args(int argc, char **argv) {
         }
         else if (a == "--mips")   o.mips = (uint32_t)parse_u64(need(i), "mips");
         else if (a == "--slices") o.slices = (uint32_t)parse_u64(need(i), "slices");
+        else if (a == "--depth")  o.depth = (uint32_t)parse_u64(need(i), "depth");
         else if (a == "--mip")    o.mip = (uint32_t)parse_u64(need(i), "mip");
         else if (a == "--slice")  o.slice = (uint32_t)parse_u64(need(i), "slice");
         else if (a == "--alpha-threshold")
@@ -635,16 +640,21 @@ static void cmd_swizzle_mip(const options &oin, bool to_linear) {
             data_size = read_file(o.input, o.offset, o.size).size();
         o.arg = resolve_ps5_arg(o, data_size, to_linear);
     }
+    const bool vol = o.depth > 1;
     texc_surface_layout lay;
-    int rc = texc_get_surface_layout(o.mode, o.format, o.width, o.height,
-                                     o.mips, o.slices, o.arg, &lay);
+    int rc = vol ? texc_get_volume_layout(o.mode, o.format, o.width, o.height,
+                                          o.depth, o.mips, o.arg, &lay)
+                 : texc_get_surface_layout(o.mode, o.format, o.width,
+                                           o.height, o.mips, o.slices, o.arg,
+                                           &lay);
     if (rc != TEXC_OK) die_rc("surface layout", rc);
     if (o.mip >= lay.mip_count) die("--mip %u out of range (0..%u)", o.mip,
                                    lay.mip_count - 1);
     if (o.slice >= lay.slice_count) die("--slice %u out of range (0..%u)",
                                        o.slice, lay.slice_count - 1);
     const texc_mip_layout &mi = lay.mips[o.mip];
-    const size_t lin = (size_t)mi.width * mi.height * lay.element_bytes;
+    const size_t lin = (size_t)mi.width * mi.height * mi.depth *
+                       lay.element_bytes;
     if (lay.total_size > (uint64_t)SIZE_MAX) die("surface too large");
 
     if (to_linear) {
@@ -654,9 +664,14 @@ static void cmd_swizzle_mip(const options &oin, bool to_linear) {
             die("input holds %zu bytes but the surface needs %llu",
                 surf.size(), (unsigned long long)lay.total_size);
         std::vector<uint8_t> out(lin);
-        rc = texc_unswizzle_mip(o.mode, o.format, o.width, o.height, o.mips,
-                                o.slices, o.arg, o.mip, o.slice, surf.data(),
-                                surf.size(), out.data(), out.size());
+        rc = vol ? texc_unswizzle_volume_mip(o.mode, o.format, o.width,
+                                             o.height, o.depth, o.mips, o.arg,
+                                             o.mip, surf.data(), surf.size(),
+                                             out.data(), out.size())
+                 : texc_unswizzle_mip(o.mode, o.format, o.width, o.height,
+                                      o.mips, o.slices, o.arg, o.mip, o.slice,
+                                      surf.data(), surf.size(), out.data(),
+                                      out.size());
         if (rc != TEXC_OK) die_rc("unswizzle mip", rc);
         write_file(o.output, out.data(), out.size());
     } else {
@@ -669,9 +684,14 @@ static void cmd_swizzle_mip(const options &oin, bool to_linear) {
                     (unsigned long long)lay.total_size);
             surf = prev;
         }
-        rc = texc_reswizzle_mip(o.mode, o.format, o.width, o.height, o.mips,
-                                o.slices, o.arg, o.mip, o.slice, src.data(),
-                                src.size(), surf.data(), surf.size());
+        rc = vol ? texc_reswizzle_volume_mip(o.mode, o.format, o.width,
+                                             o.height, o.depth, o.mips, o.arg,
+                                             o.mip, src.data(), src.size(),
+                                             surf.data(), surf.size())
+                 : texc_reswizzle_mip(o.mode, o.format, o.width, o.height,
+                                      o.mips, o.slices, o.arg, o.mip, o.slice,
+                                      src.data(), src.size(), surf.data(),
+                                      surf.size());
         if (rc != TEXC_OK) die_rc("reswizzle mip", rc);
         write_file(o.output, surf.data(), surf.size());
     }

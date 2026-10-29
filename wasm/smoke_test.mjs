@@ -381,6 +381,49 @@ try {
         "X360 loader rows: stored size, short input accepted");
 }
 
+/* ---- RAW element formats (1.8) ---- */
+{
+  check(TexFormat.RAW8 === 59 && TexFormat.RAW128 === 63, "RAW format values");
+  // Nioh 2's 128x16 RGBA16F array layers: 16384 bytes each on PS4.
+  const n = await tex.swizzler.swizzledSizePS4(TexFormat.RAW64, 128, 16);
+  const lin = new Uint8Array(128 * 16 * 8).map((_, i) => (i * 7) & 0xff);
+  const t = await tex.swizzler.reswizzlePS4(TexFormat.RAW64, lin, 128, 16);
+  const back = await tex.swizzler.unswizzlePS4(TexFormat.RAW64, t, 128, 16);
+  check(n === 16384 && back.every((b, i) => b === lin[i]),
+        "PS4 RAW64 128x16 layer size and roundtrip");
+  check(typeof tex.decoder.decodeRAW8 === "undefined" &&
+        typeof tex.encoder.encodedSizeRAW128 === "function",
+        "RAW formats get size helpers but no codec helpers");
+}
+
+/* ---- Switch whole surface (1.8): NVN block-linear storage ---- */
+{
+  // 1024x1024 BC1, 9 mips: each layer padded to 704,512 bytes.
+  const lay = await tex.swizzler.surfaceLayout(SwizzleMode.SWITCH, TexFormat.BC1,
+      1024, 1024, 9, { arg: SwitchBlockHeightAuto, sliceCount: 2 });
+  check(lay.sliceSize === 704512 && lay.totalSize === 1409024 &&
+        lay.mips[1].offset === 524288,
+        `Switch 1024x1024 BC1 x9 mips layer stride (${lay.sliceSize})`);
+}
+
+/* ---- Switch 2 volume (1.8): Pokopia's 512x512x64 BC1 = 8 MiB ---- */
+{
+  const lay = await tex.swizzler.surfaceLayout(SwizzleMode.SWITCH2, TexFormat.BC1,
+      512, 512, 1, { arg: SwitchBlockHeightAuto, depth: 64 });
+  check(lay.totalSize === 8388608 && lay.mips[0].depth === 64,
+        `Switch 2 volume layout (${lay.totalSize} bytes)`);
+  const lin = new Uint8Array(4 * 4 * 3 * 4).map((_, i) => (i * 11) & 0xff);
+  const vl = await tex.swizzler.surfaceLayout(SwizzleMode.SWITCH, TexFormat.RGBA8,
+      4, 4, 1, { arg: SwitchBlockHeightAuto, depth: 3 });
+  const surf = await tex.swizzler.reswizzleMip(SwizzleMode.SWITCH, TexFormat.RGBA8,
+      new Uint8Array(vl.totalSize), lin, 4, 4, 1, 0,
+      { arg: SwitchBlockHeightAuto, depth: 3 });
+  const back = await tex.swizzler.unswizzleMip(SwizzleMode.SWITCH, TexFormat.RGBA8,
+      surf, 4, 4, 1, 0, { arg: SwitchBlockHeightAuto, depth: 3 });
+  check(back.length === lin.length && back.every((b, i) => b === lin[i]),
+        "Switch volume mip roundtrip");
+}
+
 /* ---- Wii U mip chain (1.8): small mips are 1D_TILED_THIN1 ---- */
 {
   // Hyrule Warriors rain.g1t: 128x128 BC3, 3 mips = 21504 bytes.
@@ -466,7 +509,7 @@ try {
   check(legacySize === 65536, "PS5 LEGACY tile mode still selectable");
   let threw = false;
   try {
-    await tex.swizzler.surfaceLayout(SwizzleMode.SWITCH, TexFormat.BC7, 64, 64, 2);
+    await tex.swizzler.surfaceLayout(SwizzleMode.PSP, TexFormat.BC7, 64, 64, 2);
   } catch (e) { threw = e instanceof TexCodecError; }
   check(threw, "surfaceLayout on an unsupported mode throws TexCodecError");
   check(typeof mod._texc_get_surface_layout === "function" &&

@@ -78,6 +78,12 @@ export const TexFormat = Object.freeze({
   WII_I4: 48, WII_I8: 49, WII_IA4: 50, WII_IA8: 51, WII_RGB565: 52,
   WII_RGB5A3: 53, WII_RGBA8: 54, WII_CMPR: 55,
   WII_C4: 56, WII_C8: 57, WII_C14X2: 58,
+  /** Raw texels named by element size alone (1, 2, 4, 8, 16 bytes), for
+   *  moving uncompressed data of any width through the swizzle modes and
+   *  the mip-chain API; each platform applies its own element-size rules.
+   *  Not decodable: the channel layout is the caller's. RAW32 tiles exactly
+   *  like RGBA8. */
+  RAW8: 59, RAW16: 60, RAW32: 61, RAW64: 62, RAW128: 63,
 });
 
 /**
@@ -545,8 +551,11 @@ export class TexSwizzler {
   /**
    * Describe a whole tiled surface holding a mip chain (and array slices /
    * cube faces): total size, block geometry and where every mip lives.
-   * Implemented for {@link SwizzleMode.PS5}, {@link SwizzleMode.WIIU} (a
-   * mip chain, or several slices of one mip) and {@link SwizzleMode.NONE}.
+   * Implemented for {@link SwizzleMode.PS5}, {@link SwizzleMode.PS4},
+   * {@link SwizzleMode.SWITCH} /
+   * {@link SwizzleMode.SWITCH2} (pass `arg: SwitchBlockHeightAuto` for NVN's
+   * own block height), {@link SwizzleMode.WIIU} (a mip chain, or several
+   * slices of one mip) and {@link SwizzleMode.NONE}.
    *
    * PS5: the smallest mips share one "mip tail" block stored FIRST, then
    * the rest follow in descending order (mip 0 is LAST); slices repeat the
@@ -556,16 +565,21 @@ export class TexSwizzler {
    * @param {number} width mip 0 width in pixels
    * @param {number} height mip 0 height in pixels
    * @param {number} mipCount
-   * @param {{sliceCount?: number, arg?: number}} [opts]
+   * A volume texture (`depth` > 1; NONE, PS4, SWITCH, SWITCH2) gets its 3D
+   * layout: every mip's `depth`, its `size` covering all of its slices.
+   * @param {{sliceCount?: number, arg?: number, depth?: number}} [opts]
    * @returns {Promise<SurfaceLayout>}
    */
   async surfaceLayout(mode, format, width, height, mipCount,
-                      { sliceCount = 1, arg = 0 } = {}) {
+                      { sliceCount = 1, arg = 0, depth = 1 } = {}) {
     const mod = await this._owner._mod();
     const ptr = mod._malloc(k_layoutSize);
     try {
-      const rc = mod._texc_get_surface_layout(mode, format, width, height,
-                                              mipCount, sliceCount, arg, ptr);
+      const rc = depth > 1
+        ? mod._texc_get_volume_layout(mode, format, width, height, depth,
+                                      mipCount, arg, ptr)
+        : mod._texc_get_surface_layout(mode, format, width, height,
+                                       mipCount, sliceCount, arg, ptr);
       if (rc !== 0) throwResult(mod, "surfaceLayout", rc);
       return readLayout(mod, ptr);
     } finally {
@@ -622,19 +636,27 @@ export class TexSwizzler {
    * @param {Uint8Array} surface the whole tiled surface
    * @param {number} width mip 0 width @param {number} height mip 0 height
    * @param {number} mipCount @param {number} mip level to extract
-   * @param {{sliceCount?: number, slice?: number, arg?: number}} [opts]
+   * For a volume (`depth` > 1) the result is every slice of the mip,
+   * slice-major.
+   * @param {{sliceCount?: number, slice?: number, arg?: number,
+   *          depth?: number}} [opts]
    * @returns {Promise<Uint8Array>}
    */
   async unswizzleMip(mode, format, surface, width, height, mipCount, mip,
-                     { sliceCount = 1, slice = 0, arg = 0 } = {}) {
+                     { sliceCount = 1, slice = 0, arg = 0, depth = 1 } = {}) {
     const mod = await this._owner._mod();
     return withInput(mod, surface, (src) => {
       const sizePtr = mod._malloc(4);
       try {
-        const out = mod._texc_unswizzle_mip_alloc(mode, format, src,
-                                                  surface.byteLength, width,
-                                                  height, mipCount, sliceCount,
-                                                  arg, mip, slice, sizePtr);
+        const out = depth > 1
+          ? mod._texc_unswizzle_volume_mip_alloc(mode, format, src,
+                                                 surface.byteLength, width,
+                                                 height, depth, mipCount, arg,
+                                                 mip, sizePtr)
+          : mod._texc_unswizzle_mip_alloc(mode, format, src,
+                                          surface.byteLength, width, height,
+                                          mipCount, sliceCount, arg, mip,
+                                          slice, sizePtr);
         if (!out) throwResult(mod, "unswizzleMip", mod._texc_last_error());
         const size = mod.getValue(sizePtr, "i32") >>> 0;
         const bytes = mod.HEAPU8.slice(out, out + size);
@@ -657,20 +679,26 @@ export class TexSwizzler {
    * @param {Uint8Array} mipData linear data for the mip
    * @param {number} width @param {number} height @param {number} mipCount
    * @param {number} mip
-   * @param {{sliceCount?: number, slice?: number, arg?: number}} [opts]
+   * @param {{sliceCount?: number, slice?: number, arg?: number,
+   *          depth?: number}} [opts] `depth` > 1: a volume mip, every slice
    * @returns {Promise<Uint8Array>} updated surface
    */
   async reswizzleMip(mode, format, surface, mipData, width, height, mipCount,
-                     mip, { sliceCount = 1, slice = 0, arg = 0 } = {}) {
+                     mip, { sliceCount = 1, slice = 0, arg = 0, depth = 1 } = {}) {
     const mod = await this._owner._mod();
     return withInput(mod, mipData, (src) => {
       const surf = mod._malloc(surface.byteLength || 1);
       try {
         mod.HEAPU8.set(surface, surf);
-        const rc = mod._texc_reswizzle_mip(mode, format, width, height,
-                                           mipCount, sliceCount, arg, mip,
-                                           slice, src, mipData.byteLength,
-                                           surf, surface.byteLength);
+        const rc = depth > 1
+          ? mod._texc_reswizzle_volume_mip(mode, format, width, height, depth,
+                                           mipCount, arg, mip, src,
+                                           mipData.byteLength, surf,
+                                           surface.byteLength)
+          : mod._texc_reswizzle_mip(mode, format, width, height, mipCount,
+                                    sliceCount, arg, mip, slice, src,
+                                    mipData.byteLength, surf,
+                                    surface.byteLength);
         if (rc !== 0) throwResult(mod, "reswizzleMip", rc);
         return mod.HEAPU8.slice(surf, surf + surface.byteLength);
       } finally {
@@ -751,6 +779,7 @@ function readLayout(mod, p) {
       width: mu(0), height: mu(4), paddedWidth: mu(8), paddedHeight: mu(12),
       offset: readU64(mod, m + 16), size: readU64(mod, m + 24),
       inTail: mu(32) !== 0, tailX: mu(36), tailY: mu(40),
+      depth: mu(44) || 1,
     });
   }
   return {
@@ -1033,6 +1062,10 @@ export class TexCodec {
 
 for (const [name, fmt] of Object.entries(TexFormat)) {
   if (fmt === TexFormat.INVALID) continue;
+  TexEncoder.prototype[`encodedSize${name}`] = function (width, height) {
+    return this.encodedSize(fmt, width, height);
+  };
+  if (name.startsWith("RAW")) continue;   // element formats: no codec
   TexDecoder.prototype[`decode${name}`] = function (data, width, height) {
     return this.decode(fmt, data, width, height);
   };
@@ -1042,9 +1075,6 @@ for (const [name, fmt] of Object.entries(TexFormat)) {
   TexEncoder.prototype[`encode${name}`] =
       function (rgba, width, height, options) {
     return this.encode(fmt, rgba, width, height, options);
-  };
-  TexEncoder.prototype[`encodedSize${name}`] = function (width, height) {
-    return this.encodedSize(fmt, width, height);
   };
 }
 

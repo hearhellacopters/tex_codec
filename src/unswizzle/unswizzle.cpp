@@ -157,6 +157,49 @@ inline uint64_t map_morton8x8(uint32_t pw, uint32_t x, uint32_t y, uint32_t eb)
     return ((uint64_t)(y >> 3) * pw * 8 + (uint64_t)(x >> 3) * 64 + m) * eb;
 }
 
+/* Padded pitch in elements. 3DS: 8-aligned. PS4 (GNM Thin_1dThin, checked
+ * against Sony's GpuAddress with tools/ps4_oracle): 8-aligned, then grown
+ * by 8 until one slice (pitch * align8(height) * bytes) is a multiple of
+ * 256 bytes - which only changes anything for 1- and 2-byte elements. */
+uint32_t morton8x8_pitch(texc_swizzle_mode mode, const Grid &g)
+{
+    uint32_t pw = align_up(g.ew, 8);
+    if (mode == TEXC_SWIZZLE_PS4) {
+        const uint64_t ph = align_up(g.eh, 8);
+        while (((uint64_t)pw * ph * g.eb) % 256)
+            pw += 8;
+    }
+    return pw;
+}
+
+/* PS4 Thin_1dThin pitch for a cols x rows element mip. */
+uint32_t ps4_pitch(const Grid &g, uint32_t cols, uint32_t rows)
+{
+    Grid sg = g;
+    sg.ew = cols;
+    sg.eh = rows;
+    return morton8x8_pitch(TEXC_SWIZZLE_PS4, sg);
+}
+
+/* Element grid GNM pads a PS4 mip to before tiling. A lone mip keeps its
+ * size. In a chain of several mips (any size), each mip's width is mip 0's
+ * width rounded up to a power of two, then halved per level, and its height
+ * (and a volume's depth) is the mip's own, rounded up to a power of two -
+ * fitted against KTGL / GpuAddress on 1,000 random 2D and volume chains
+ * (tools/ps4_oracle). */
+void ps4_mip_dims(const Grid &g, uint32_t w, uint32_t h, uint32_t m,
+                  uint32_t mips, uint32_t *cols, uint32_t *rows)
+{
+    uint32_t mw = (w >> m) ? (w >> m) : 1;
+    uint32_t mh = (h >> m) ? (h >> m) : 1;
+    if (mips > 1) {
+        mw = (next_pow2(w) >> m) ? (next_pow2(w) >> m) : 1;
+        mh = next_pow2(mh);
+    }
+    *cols = (mw + g.bw - 1) / g.bw;
+    *rows = (mh + g.bh - 1) / g.bh;
+}
+
 /* ------------------------------------ PS Vita raw: 32x32 pixel tiles ---
  * Port of DeswizzlePSVitaRaw -> SwizzleMasterFunction(Block32x32Unswizzle)
  * (G1TFormatConvert.h). Reference mapping, in PIXEL units:
@@ -254,19 +297,28 @@ inline uint64_t map_switch_gob(uint32_t width_gobs, uint32_t bh,
     return a + gob_offset(xb, y, orin);
 }
 
-/* Port of block_height_enum() / mip_block_height() from ref/G1T.h. */
-uint32_t switch_auto_block_height(uint32_t blocks_y)
+/* Port of block_height_enum() / mip_block_height() from ref/G1T.h (the
+ * same rules as tegra_swizzle's block_height_mip0 / mip_block_height). */
+uint32_t switch_block_height_mip0(uint32_t blocks_y)
 {
     const uint32_t h = blocks_y + blocks_y / 2;
-    uint32_t bh;
-    if (h >= 128)     bh = 16;
-    else if (h >= 64) bh = 8;
-    else if (h >= 32) bh = 4;
-    else if (h >= 16) bh = 2;
-    else              bh = 1;
+    if (h >= 128) return 16;
+    if (h >= 64)  return 8;
+    if (h >= 32)  return 4;
+    if (h >= 16)  return 2;
+    return 1;
+}
+
+uint32_t switch_mip_block_height(uint32_t blocks_y, uint32_t bh)
+{
     while (blocks_y <= (bh / 2) * 8 && bh > 1)
         bh /= 2;
     return bh;
+}
+
+uint32_t switch_auto_block_height(uint32_t blocks_y)
+{
+    return switch_mip_block_height(blocks_y, switch_block_height_mip0(blocks_y));
 }
 
 bool switch_block_height(uint32_t blocks_y, uint32_t arg, uint32_t *bh)
@@ -370,6 +422,16 @@ int x360_endian(const Grid &g, uint32_t arg, uint32_t p)
     return p % unit ? -1 : (int)e;
 }
 
+/* Tiled X360 surface size: 32x32-element macro tiles, the whole level
+ * then aligned to 4 KB (Xenia's guest layout). The 4 KB alignment only
+ * matters for 1- and 2-byte elements, whose address function spreads a
+ * 32-row band of macro tiles over whole 4 KB pages. */
+uint64_t x360_tiled_size(uint32_t gw, uint32_t gh, uint32_t p)
+{
+    const uint64_t raw = (uint64_t)align_up(gw, 32) * align_up(gh, 32) * p;
+    return (raw + 4095) / 4096 * 4096;
+}
+
 int convert_x360(const Grid &g, uint32_t arg,
                  const uint8_t *src, size_t src_size,
                  uint8_t *dst, size_t dst_size, bool to_linear)
@@ -382,8 +444,7 @@ int convert_x360(const Grid &g, uint32_t arg,
         return TEXC_ERR_INVALID_ARG;
 
     const uint32_t pw = align_up(gw, 32);
-    const uint32_t ph = align_up(gh, 32);
-    const uint64_t tiled_size = (uint64_t)pw * ph * p;
+    const uint64_t tiled_size = x360_tiled_size(gw, gh, p);
     const uint64_t lin_size = (uint64_t)gw * gh * p;
     if (tiled_size > (uint64_t)SIZE_MAX)
         return TEXC_ERR_INVALID_ARG;
@@ -404,7 +465,7 @@ int convert_x360(const Grid &g, uint32_t arg,
         memset(dst, 0, (size_t)stored_size);
     }
 
-    const uint64_t total = (uint64_t)pw * ph;
+    const uint64_t total = tiled_size / p;
     for (uint64_t t = 0; t < total; ++t) {
         const uint32_t x = xg_tiled_x((uint32_t)t, pw, p);
         const uint32_t y = xg_tiled_y((uint32_t)t, pw, p);
@@ -683,7 +744,18 @@ bool wiiu_hw_format(const Grid &g, uint32_t *hw)
 {
     if (g.bw == 4 && g.bh == 4 && g.eb == 8)  { *hw = 0x31; return true; }
     if (g.bw == 4 && g.bh == 4 && g.eb == 16) { *hw = 0x33; return true; }
-    if (g.bw == 1 && g.bh == 1 && g.eb == 4)  { *hw = 0x1A; return true; }
+    if (g.bw == 1 && g.bh == 1) {
+        /* raw texels: a GX2 format of the same element size (R8, R8G8,
+         * R8G8B8A8, R16G16B16A16, R32G32B32A32) - addrlib only uses its
+         * bits per element */
+        switch (g.eb) {
+        case 1:  *hw = 0x01; return true;
+        case 2:  *hw = 0x07; return true;
+        case 4:  *hw = 0x1A; return true;
+        case 8:  *hw = 0x1F; return true;
+        case 16: *hw = 0x23; return true;
+        }
+    }
     return false; /* no GX2 hardware layout for this block geometry */
 }
 
@@ -768,6 +840,185 @@ int layout_wiiu(const Grid &g, uint32_t w, uint32_t h, uint32_t mips,
     return TEXC_OK;
 }
 
+/* Whole PS4 surface as KTGL stores it (Thin_1dThin for tiled formats):
+ * mips back to back, mip 0 first, each padded as ps4_mip_dims says and
+ * tiled in 8x8 Morton micro-tiles at its own pitch. Several slices are
+ * supported for a single mip (slices back to back); with a mip chain the
+ * slice order is not pinned down yet. */
+int layout_ps4(const Grid &g, uint32_t w, uint32_t h, uint32_t mips,
+               uint32_t slices, texc_surface_layout *out)
+{
+    if (mips > TEXC_MAX_MIPS)
+        return TEXC_ERR_INVALID_ARG;
+    if (mips > 1 && slices > 1)
+        return TEXC_ERR_UNSUPPORTED;
+    memset(out, 0, sizeof *out);
+    out->mip_count = mips;
+    out->slice_count = slices;
+    out->first_mip_in_tail = mips;
+    out->block_width = out->block_height = 8;
+    out->block_bytes = 64 * g.eb;
+    out->element_bytes = g.eb;
+    uint64_t off = 0;
+    for (uint32_t m = 0; m < mips; ++m) {
+        uint32_t pc = 0, pr = 0;
+        ps4_mip_dims(g, w, h, m, mips, &pc, &pr);
+        texc_mip_layout &mi = out->mips[m];
+        const uint32_t mw = (w >> m) ? (w >> m) : 1;
+        const uint32_t mh = (h >> m) ? (h >> m) : 1;
+        mi.width = (mw + g.bw - 1) / g.bw;
+        mi.height = (mh + g.bh - 1) / g.bh;
+        mi.padded_width = ps4_pitch(g, pc, pr);
+        mi.padded_height = align_up(pr, 8);
+        mi.offset = off;
+        mi.size = (uint64_t)mi.padded_width * mi.padded_height * g.eb;
+        off += mi.size;
+    }
+    out->slice_size = off;
+    out->total_size = off * slices;
+    return TEXC_OK;
+}
+
+int convert_mip_ps4(const Grid &g, const texc_surface_layout &lay,
+                    uint32_t mip, uint32_t slice,
+                    const uint8_t *src, size_t src_size,
+                    uint8_t *dst, size_t dst_size, bool to_linear)
+{
+    const texc_mip_layout &mi = lay.mips[mip];
+    const uint64_t lin = (uint64_t)mi.width * mi.height * g.eb;
+    if (lay.total_size > (uint64_t)SIZE_MAX)
+        return TEXC_ERR_INVALID_ARG;
+    if (to_linear ? (src_size < lay.total_size || dst_size < lin)
+                  : (src_size < lin || dst_size < lay.total_size))
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+    const uint64_t base = (uint64_t)slice * lay.slice_size + mi.offset;
+    for (uint32_t y = 0; y < mi.height; ++y)
+        for (uint32_t x = 0; x < mi.width; ++x) {
+            const uint64_t toff =
+                base + map_morton8x8(mi.padded_width, x, y, g.eb);
+            const uint64_t loff = ((uint64_t)y * mi.width + x) * g.eb;
+            if (to_linear)
+                memcpy(dst + (size_t)loff, src + (size_t)toff, g.eb);
+            else
+                memcpy(dst + (size_t)toff, src + (size_t)loff, g.eb);
+        }
+    return TEXC_OK;
+}
+
+/* Whole Switch / Switch 2 surface: NVN's block-linear storage, which is
+ * what KTGL reads a tiled G1T payload into (nvnTextureGetStorageSize bytes,
+ * Age of Calamity) and what tegra_swizzle's surface functions compute.
+ * Each layer holds its mips back to back, each mip in GOB blocks of its
+ * own height (mip 0's, halved while the mip still fits in half of it);
+ * with several layers every layer is padded to a whole block of GOBs,
+ * sized from mip 0's block height halved while half of it still covers
+ * the image height in PIXELS (tegra_swizzle's rule). */
+struct SwitchMip {
+    uint32_t cols, rows, bh, width_gobs;
+    uint64_t size;
+};
+
+bool switch_mip(const Grid &g, uint32_t w, uint32_t h, uint32_t bh0,
+                uint32_t m, SwitchMip *out)
+{
+    const uint32_t mw = (w >> m) ? (w >> m) : 1;
+    const uint32_t mh = (h >> m) ? (h >> m) : 1;
+    out->cols = (mw + g.bw - 1) / g.bw;
+    out->rows = (mh + g.bh - 1) / g.bh;
+    out->bh = switch_mip_block_height(out->rows, bh0);
+    const uint64_t wg = ((uint64_t)out->cols * g.eb + 63) / 64;
+    if (wg > 0xFFFFFFFFu)
+        return false;
+    out->width_gobs = (uint32_t)wg;
+    out->size = wg * ((out->rows + out->bh * 8 - 1) / (out->bh * 8)) *
+                out->bh * 512ull;
+    return true;
+}
+
+bool switch_bh0(const Grid &g, uint32_t arg, uint32_t *bh0)
+{
+    if (arg == 0xFFFFFFFFu) {
+        *bh0 = switch_block_height_mip0(g.eh);
+        return true;
+    }
+    if (arg > 5)
+        return false;
+    *bh0 = 1u << arg;
+    return true;
+}
+
+int layout_switch(const Grid &g, uint32_t w, uint32_t h, uint32_t mips,
+                  uint32_t slices, uint32_t arg, texc_surface_layout *out)
+{
+    uint32_t bh0 = 0;
+    if (mips > TEXC_MAX_MIPS || !switch_bh0(g, arg, &bh0))
+        return TEXC_ERR_INVALID_ARG;
+    memset(out, 0, sizeof *out);
+    out->mip_count = mips;
+    out->slice_count = slices;
+    out->first_mip_in_tail = mips;
+    out->block_width = g.eb <= 64 ? 64 / g.eb : 1;  /* one GOB wide */
+    out->block_height = 8 * bh0;
+    out->block_bytes = 512 * bh0;
+    out->element_bytes = g.eb;
+    uint64_t off = 0;
+    for (uint32_t m = 0; m < mips; ++m) {
+        SwitchMip sm;
+        if (!switch_mip(g, w, h, bh0, m, &sm))
+            return TEXC_ERR_INVALID_ARG;
+        texc_mip_layout &mi = out->mips[m];
+        mi.width = sm.cols;
+        mi.height = sm.rows;
+        mi.padded_width = (uint32_t)((uint64_t)sm.width_gobs * 64 / g.eb);
+        mi.padded_height = (sm.rows + sm.bh * 8 - 1) / (sm.bh * 8) * sm.bh * 8;
+        mi.offset = off;
+        mi.size = sm.size;
+        off += sm.size;
+    }
+    if (slices > 1) {
+        uint32_t bh = bh0;
+        while (bh >= 2 && 8 * (bh / 2) >= h)
+            bh /= 2;
+        const uint64_t a = 512ull * bh;
+        off = (off + a - 1) / a * a;
+    }
+    out->slice_size = off;
+    out->total_size = off * slices;
+    return TEXC_OK;
+}
+
+int convert_mip_switch(const Grid &g, uint32_t w, uint32_t h,
+                       const texc_surface_layout &lay, uint32_t arg,
+                       uint32_t mip, uint32_t slice, bool orin,
+                       const uint8_t *src, size_t src_size,
+                       uint8_t *dst, size_t dst_size, bool to_linear)
+{
+    uint32_t bh0 = 0;
+    SwitchMip sm;
+    if (!switch_bh0(g, arg, &bh0) || !switch_mip(g, w, h, bh0, mip, &sm))
+        return TEXC_ERR_INVALID_ARG;
+    const uint64_t lin = (uint64_t)sm.cols * sm.rows * g.eb;
+    if (lay.total_size > (uint64_t)SIZE_MAX)
+        return TEXC_ERR_INVALID_ARG;
+    if (to_linear ? (src_size < lay.total_size || dst_size < lin)
+                  : (src_size < lin || dst_size < lay.total_size))
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+    const uint64_t base = (uint64_t)slice * lay.slice_size + lay.mips[mip].offset;
+    for (uint32_t y = 0; y < sm.rows; ++y)
+        for (uint32_t x = 0; x < sm.cols; ++x) {
+            const uint64_t toff = base + map_switch_gob(sm.width_gobs, sm.bh,
+                                                        x * g.eb, y, orin);
+            const uint64_t loff = ((uint64_t)y * sm.cols + x) * g.eb;
+            if (toff + g.eb > lay.total_size)
+                return TEXC_ERR_BUFFER_TOO_SMALL;
+            if (to_linear)
+                memcpy(dst + (size_t)loff, src + (size_t)toff, g.eb);
+            else
+                memcpy(dst + (size_t)toff, src + (size_t)loff, g.eb);
+        }
+    return TEXC_OK;
+}
+
 int convert_mip_wiiu(const Grid &g, uint32_t w, uint32_t h,
                      const texc_surface_layout &lay, uint32_t arg,
                      uint32_t mip, uint32_t slice,
@@ -818,7 +1069,7 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
 
     case TEXC_SWIZZLE_PS4:
     case TEXC_SWIZZLE_3DS:
-        return (uint64_t)align_up(g.ew, 8) * align_up(g.eh, 8) * g.eb;
+        return (uint64_t)morton8x8_pitch(mode, g) * align_up(g.eh, 8) * g.eb;
 
     case TEXC_SWIZZLE_PS5: {
         if (arg == TEXC_PS5_TILE_LEGACY)
@@ -856,7 +1107,7 @@ uint64_t tiled_size_impl(texc_swizzle_mode mode, const Grid &g,
             return 0;
         if (arg & TEXC_X360_LOADER_ROWS)
             return (uint64_t)gw * gh * p;
-        return (uint64_t)align_up(gw, 32) * align_up(gh, 32) * p;
+        return x360_tiled_size(gw, gh, p);
     }
 
     case TEXC_SWIZZLE_PSP: {
@@ -956,7 +1207,7 @@ int swizzle_convert(texc_swizzle_mode mode, texc_format fmt,
     case TEXC_SWIZZLE_PS4:
     case TEXC_SWIZZLE_3DS: {
         const uint64_t ts = tiled_size_impl(mode, g, width, height, arg);
-        const uint32_t pw = align_up(g.ew, 8);
+        const uint32_t pw = morton8x8_pitch(mode, g);
         return run_map(g, ts, src, src_size, dst, dst_size, dir_to_linear,
                        [&](uint32_t x, uint32_t y) {
                            return map_morton8x8(pw, x, y, g.eb);
@@ -1065,19 +1316,281 @@ int surface_layout(texc_swizzle_mode mode, texc_format fmt,
     Grid g;
     if (!out || !get_grid(fmt, width, height, &g) || !mips || !slices)
         return TEXC_ERR_INVALID_ARG;
+    int rc;
     switch (mode) {
     case TEXC_SWIZZLE_NONE:
-        return layout_linear(g, width, height, mips, slices, out);
+        rc = layout_linear(g, width, height, mips, slices, out);
+        break;
     case TEXC_SWIZZLE_PS5:
         if (arg == TEXC_PS5_TILE_LEGACY)
             return TEXC_ERR_UNSUPPORTED;
-        return ps5::surface_layout(width, height, g.bw, g.bh, g.eb,
-                                   mips, slices, arg, out);
+        rc = ps5::surface_layout(width, height, g.bw, g.bh, g.eb,
+                                 mips, slices, arg, out);
+        break;
     case TEXC_SWIZZLE_WIIU:
-        return layout_wiiu(g, width, height, mips, slices, out);
+        rc = layout_wiiu(g, width, height, mips, slices, out);
+        break;
+    case TEXC_SWIZZLE_SWITCH:
+    case TEXC_SWIZZLE_SWITCH2:
+        rc = layout_switch(g, width, height, mips, slices, arg, out);
+        break;
+    case TEXC_SWIZZLE_PS4:
+        rc = layout_ps4(g, width, height, mips, slices, out);
+        break;
     default:
         return TEXC_ERR_UNSUPPORTED;
     }
+    if (rc == TEXC_OK)
+        for (uint32_t m = 0; m < out->mip_count; ++m)
+            out->mips[m].depth = 1;
+    return rc;
+}
+
+/* ---------------------------------------------------- volume surfaces --- */
+
+namespace {
+
+/* tegra_swizzle's block depth for a mip `depth` slices deep. */
+uint32_t switch_block_depth(uint32_t depth)
+{
+    const uint32_t d = depth + depth / 2;
+    if (d >= 16) return 16;
+    if (d >= 8)  return 8;
+    if (d >= 4)  return 4;
+    if (d >= 2)  return 2;
+    return 1;
+}
+
+struct VolumeMip {
+    uint32_t cols, rows, depth;
+    uint32_t bh, bd, width_gobs;    /* Switch only */
+    uint64_t slab;                  /* Switch: bytes per bd slices */
+    uint32_t pw, ph;                /* PS4: padded pitch / height */
+    bool thick;                     /* PS4: Thick_1dThick, else per-slice
+                                     * Thin_1dThin */
+    uint64_t size;
+};
+
+/* GNM Thick_1dThick: 8x8x4-element micro tiles, row by row, then a 4-slice
+ * slab at a time. Element order inside a micro tile, lowest bit first, as
+ * Sony's GpuAddress tileSurface lays it out (tools/ps4_oracle):
+ *   1 / 2-byte texels x0 y0 x1 y1 z0 z1 x2 y2
+ *   4-byte texels     x0 y0 x1 z0 y1 z1 x2 y2
+ *   8-byte texels     x0 y0 z0 x1 y1 z1 x2 y2
+ * (block-compressed volumes come out Thin_1dThin a slice at a time) */
+inline uint32_t ps4_thick_index(const Grid &g, uint32_t x, uint32_t y,
+                                uint32_t z)
+{
+    const uint32_t x0 = x & 1, x1 = (x >> 1) & 1, x2 = (x >> 2) & 1;
+    const uint32_t y0 = y & 1, y1 = (y >> 1) & 1, y2 = (y >> 2) & 1;
+    const uint32_t z0 = z & 1, z1 = (z >> 1) & 1;
+    if (g.eb <= 2)
+        return x0 | y0 << 1 | x1 << 2 | y1 << 3 | z0 << 4 | z1 << 5 |
+               x2 << 6 | y2 << 7;
+    if (g.eb == 4)
+        return x0 | y0 << 1 | x1 << 2 | z0 << 3 | y1 << 4 | z1 << 5 |
+               x2 << 6 | y2 << 7;
+    return x0 | y0 << 1 | z0 << 2 | x1 << 3 | y1 << 4 | z1 << 5 |
+           x2 << 6 | y2 << 7;
+}
+
+bool volume_mip(texc_swizzle_mode mode, const Grid &g, uint32_t w,
+                uint32_t h, uint32_t d, uint32_t m, uint32_t mips,
+                VolumeMip *out)
+{
+    const uint32_t mw = (w >> m) ? (w >> m) : 1;
+    const uint32_t mh = (h >> m) ? (h >> m) : 1;
+    out->depth = (d >> m) ? (d >> m) : 1;
+    out->cols = (mw + g.bw - 1) / g.bw;
+    out->rows = (mh + g.bh - 1) / g.bh;
+    if (mode == TEXC_SWIZZLE_NONE) {
+        out->size = (uint64_t)out->cols * out->rows * out->depth * g.eb;
+        return true;
+    }
+    if (mode == TEXC_SWIZZLE_PS4) {
+        /* KTGL's volume setup (eboot 0x22B8010) asks GNM for Thick_1dThick
+         * for every tiled format but 16-byte raw texels (RGBA32F). GNM
+         * lays out raw texels thick; block-compressed formats and RGBA32F
+         * come out Thin_1dThin a slice at a time, slices not padded.
+         * Sizes and bytes as GpuAddress produces them (tools/ps4_oracle) */
+        out->thick = g.bw == 1 && g.bh == 1 && g.eb != 16;
+        uint32_t pc = 0, pr = 0, pd = out->depth;
+        ps4_mip_dims(g, w, h, m, mips, &pc, &pr);
+        if (mips > 1)
+            pd = next_pow2(pd);
+        out->ph = align_up(pr, 8);
+        if (out->thick) {
+            out->pw = align_up(pc, 8);
+            out->size = (uint64_t)out->pw * out->ph * align_up(pd, 4) * g.eb;
+        } else {
+            out->pw = ps4_pitch(g, pc, pr);
+            out->size = (uint64_t)out->pw * out->ph * g.eb * pd;
+        }
+        return true;
+    }
+    /* NVN gives a volume a block height of one GOB (tegra_swizzle forces
+     * block_height_mip0 to 1 for depth > 1); depth 1 keeps the 2D rule */
+    const uint32_t bh0 = d > 1 ? 1 : switch_block_height_mip0(g.eh);
+    out->bh = switch_mip_block_height(out->rows, bh0);
+    out->bd = switch_block_depth(out->depth);
+    const uint64_t wg = ((uint64_t)out->cols * g.eb + 63) / 64;
+    if (wg > 0xFFFFFFFFu)
+        return false;
+    out->width_gobs = (uint32_t)wg;
+    out->slab = wg * ((out->rows + out->bh * 8 - 1) / (out->bh * 8)) *
+                512ull * out->bh * out->bd;
+    out->size = (uint64_t)((out->depth + out->bd - 1) / out->bd) * out->slab;
+    return true;
+}
+
+/* Byte offset of (xb, y, z) in a Switch 3D block-linear mip: blocks of
+ * 1 x bh x bd GOBs, across x, then down y, then deeper in z. */
+inline uint64_t map_switch_gob_3d(const VolumeMip &v, uint32_t xb, uint32_t y,
+                                  uint32_t z, bool orin)
+{
+    const uint64_t block = 512ull * v.bh * v.bd;
+    return (uint64_t)(z / v.bd) * v.slab +
+           (uint64_t)(z % v.bd) * 512ull * v.bh +
+           (uint64_t)(y / (8 * v.bh)) * block * v.width_gobs +
+           (uint64_t)((y % (8 * v.bh)) / 8) * 512 +
+           (uint64_t)(xb / 64) * block + gob_offset(xb, y, orin);
+}
+
+bool volume_mode(texc_swizzle_mode mode)
+{
+    return mode == TEXC_SWIZZLE_NONE || mode == TEXC_SWIZZLE_PS4 ||
+           mode == TEXC_SWIZZLE_SWITCH || mode == TEXC_SWIZZLE_SWITCH2;
+}
+
+} /* namespace */
+
+int volume_layout(texc_swizzle_mode mode, texc_format fmt,
+                  uint32_t width, uint32_t height, uint32_t depth,
+                  uint32_t mips, uint32_t arg, texc_surface_layout *out)
+{
+    Grid g;
+    if (!out || !get_grid(fmt, width, height, &g) || !depth || !mips ||
+        mips > TEXC_MAX_MIPS)
+        return TEXC_ERR_INVALID_ARG;
+    if (!volume_mode(mode))
+        return TEXC_ERR_UNSUPPORTED;
+    if ((mode == TEXC_SWIZZLE_SWITCH || mode == TEXC_SWIZZLE_SWITCH2) &&
+        arg != 0xFFFFFFFFu && arg > 5)
+        return TEXC_ERR_INVALID_ARG;
+    memset(out, 0, sizeof *out);
+    out->mip_count = mips;
+    out->slice_count = 1;
+    out->first_mip_in_tail = mips;
+    out->element_bytes = g.eb;
+    uint64_t off = 0;
+    for (uint32_t m = 0; m < mips; ++m) {
+        VolumeMip v;
+        if (!volume_mip(mode, g, width, height, depth, m, mips, &v))
+            return TEXC_ERR_INVALID_ARG;
+        texc_mip_layout &mi = out->mips[m];
+        mi.width = v.cols;
+        mi.height = v.rows;
+        mi.depth = v.depth;
+        if (mode == TEXC_SWIZZLE_NONE) {
+            mi.padded_width = v.cols;
+            mi.padded_height = v.rows;
+        } else if (mode == TEXC_SWIZZLE_PS4) {
+            mi.padded_width = v.pw;
+            mi.padded_height = v.ph;
+        } else {
+            mi.padded_width = (uint32_t)((uint64_t)v.width_gobs * 64 / g.eb);
+            mi.padded_height = (v.rows + v.bh * 8 - 1) / (v.bh * 8) * v.bh * 8;
+        }
+        if (m == 0) {
+            if (mode == TEXC_SWIZZLE_NONE) {
+                out->block_width = out->block_height = 1;
+                out->block_bytes = g.eb;
+            } else if (mode == TEXC_SWIZZLE_PS4) {
+                out->block_width = out->block_height = 8;
+                out->block_bytes = (v.thick ? 256 : 64) * g.eb;
+            } else {
+                out->block_width = g.eb > 64 ? 1 : 64 / g.eb;
+                out->block_height = 8 * v.bh;
+                out->block_bytes = 512 * v.bh * v.bd;
+            }
+        }
+        mi.offset = off;
+        mi.size = v.size;
+        off += v.size;
+    }
+    out->slice_size = off;
+    out->total_size = off;
+    return TEXC_OK;
+}
+
+int convert_volume_mip(texc_swizzle_mode mode, texc_format fmt,
+                       uint32_t width, uint32_t height, uint32_t depth,
+                       uint32_t mips, uint32_t arg, uint32_t mip,
+                       const uint8_t *src, size_t src_size,
+                       uint8_t *dst, size_t dst_size, bool to_linear)
+{
+    texc_surface_layout lay;
+    const int rc = volume_layout(mode, fmt, width, height, depth, mips, arg,
+                                 &lay);
+    if (rc != TEXC_OK)
+        return rc;
+    if (mip >= lay.mip_count)
+        return TEXC_ERR_INVALID_ARG;
+    Grid g;
+    get_grid(fmt, width, height, &g);
+    VolumeMip v;
+    volume_mip(mode, g, width, height, depth, mip, mips, &v);
+    const uint64_t lin = (uint64_t)v.cols * v.rows * v.depth * g.eb;
+    if (lay.total_size > (uint64_t)SIZE_MAX || lin > (uint64_t)SIZE_MAX)
+        return TEXC_ERR_INVALID_ARG;
+    if (to_linear ? (src_size < lay.total_size || dst_size < lin)
+                  : (src_size < lin || dst_size < lay.total_size))
+        return TEXC_ERR_BUFFER_TOO_SMALL;
+    const uint64_t base = lay.mips[mip].offset;
+    if (mode == TEXC_SWIZZLE_NONE) {
+        if (to_linear)
+            memcpy(dst, src + (size_t)base, (size_t)lin);
+        else
+            memcpy(dst + (size_t)base, src, (size_t)lin);
+        return TEXC_OK;
+    }
+    if (mode == TEXC_SWIZZLE_PS4) {
+        const uint64_t tiles_x = v.pw / 8, tiles_y = v.ph / 8;
+        const uint64_t slice = (uint64_t)v.pw * v.ph * g.eb;
+        for (uint32_t z = 0; z < v.depth; ++z)
+            for (uint32_t y = 0; y < v.rows; ++y)
+                for (uint32_t x = 0; x < v.cols; ++x) {
+                    const uint64_t toff = base + (v.thick
+                        ? (((z / 4) * tiles_y * tiles_x + (y / 8) * tiles_x +
+                            x / 8) * 256 + ps4_thick_index(g, x, y, z)) * g.eb
+                        : z * slice + map_morton8x8(v.pw, x, y, g.eb));
+                    const uint64_t loff =
+                        (((uint64_t)z * v.rows + y) * v.cols + x) * g.eb;
+                    if (toff + g.eb > lay.total_size)
+                        return TEXC_ERR_BUFFER_TOO_SMALL;
+                    if (to_linear)
+                        memcpy(dst + (size_t)loff, src + (size_t)toff, g.eb);
+                    else
+                        memcpy(dst + (size_t)toff, src + (size_t)loff, g.eb);
+                }
+        return TEXC_OK;
+    }
+    const bool orin = mode == TEXC_SWIZZLE_SWITCH2;
+    for (uint32_t z = 0; z < v.depth; ++z)
+        for (uint32_t y = 0; y < v.rows; ++y)
+            for (uint32_t x = 0; x < v.cols; ++x) {
+                const uint64_t toff =
+                    base + map_switch_gob_3d(v, x * g.eb, y, z, orin);
+                const uint64_t loff =
+                    (((uint64_t)z * v.rows + y) * v.cols + x) * g.eb;
+                if (toff + g.eb > lay.total_size)
+                    return TEXC_ERR_BUFFER_TOO_SMALL;
+                if (to_linear)
+                    memcpy(dst + (size_t)loff, src + (size_t)toff, g.eb);
+                else
+                    memcpy(dst + (size_t)toff, src + (size_t)loff, g.eb);
+            }
+    return TEXC_OK;
 }
 
 int convert_mip(texc_swizzle_mode mode, texc_format fmt,
@@ -1098,11 +1611,20 @@ int convert_mip(texc_swizzle_mode mode, texc_format fmt,
     if (mode == TEXC_SWIZZLE_PS5)
         return ps5::convert_mip(lay, arg, mip, slice, src, src_size,
                                 dst, dst_size, dir_to_linear, false);
-    if (mode == TEXC_SWIZZLE_WIIU) {
+    if (mode == TEXC_SWIZZLE_WIIU || mode == TEXC_SWIZZLE_SWITCH ||
+        mode == TEXC_SWIZZLE_SWITCH2 || mode == TEXC_SWIZZLE_PS4) {
         Grid g;
         get_grid(fmt, width, height, &g);
-        return convert_mip_wiiu(g, width, height, lay, arg, mip, slice, src,
-                                src_size, dst, dst_size, dir_to_linear);
+        if (mode == TEXC_SWIZZLE_PS4)
+            return convert_mip_ps4(g, lay, mip, slice, src, src_size, dst,
+                                   dst_size, dir_to_linear);
+        if (mode == TEXC_SWIZZLE_WIIU)
+            return convert_mip_wiiu(g, width, height, lay, arg, mip, slice,
+                                    src, src_size, dst, dst_size,
+                                    dir_to_linear);
+        return convert_mip_switch(g, width, height, lay, arg, mip, slice,
+                                  mode == TEXC_SWIZZLE_SWITCH2, src, src_size,
+                                  dst, dst_size, dir_to_linear);
     }
 
     /* NONE: a plain copy at the mip's offset. */

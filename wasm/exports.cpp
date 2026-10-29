@@ -193,6 +193,35 @@ TEXC_API uint8_t *texc_unswizzle_mip_alloc(texc_swizzle_mode mode,
     return dst;
 }
 
+/* Every slice of one mip of a volume surface, linear and slice-major, to a
+ * freshly allocated buffer; *out_size receives the byte count. */
+TEXC_API uint8_t *texc_unswizzle_volume_mip_alloc(texc_swizzle_mode mode,
+                                                  texc_format format,
+                                                  const uint8_t *surface,
+                                                  size_t surface_size,
+                                                  uint32_t width,
+                                                  uint32_t height,
+                                                  uint32_t depth,
+                                                  uint32_t mip_count,
+                                                  uint32_t arg, uint32_t mip,
+                                                  size_t *out_size) {
+    texc_surface_layout lay;
+    g_last_error = texc_get_volume_layout(mode, format, width, height, depth,
+                                          mip_count, arg, &lay);
+    if (g_last_error != TEXC_OK) return NULL;
+    if (mip >= lay.mip_count) { g_last_error = TEXC_ERR_INVALID_ARG; return NULL; }
+    size_t need = (size_t)lay.mips[mip].width * lay.mips[mip].height *
+                  lay.mips[mip].depth * lay.element_bytes;
+    uint8_t *dst = (uint8_t *)malloc(need ? need : 1);
+    if (!dst) { g_last_error = TEXC_ERR_OUT_OF_MEMORY; return NULL; }
+    g_last_error = texc_unswizzle_volume_mip(mode, format, width, height,
+                                             depth, mip_count, arg, mip,
+                                             surface, surface_size, dst, need);
+    if (g_last_error != TEXC_OK) { free(dst); return NULL; }
+    if (out_size) *out_size = need;
+    return dst;
+}
+
 /* ------------------------------------------------- per-format wrappers */
 
 #define TEXC_DEF_FORMAT(suffix, FMT)                                          \

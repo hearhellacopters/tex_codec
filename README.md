@@ -20,6 +20,7 @@ Includes Web Assembly for `.wasm`, `.js` and `.ts` output.
 | PICA200 (3DS) | `PICA_ETC1_RGB8` (GPU_ETC1), `PICA_ETC1_RGB8A4` (GPU_ETC1A4) | ✅ | ✅ |
 | GameCube / Wii (GX, TPL) | `WII_I4`, `WII_I8`, `WII_IA4`, `WII_IA8`, `WII_RGB565`, `WII_RGB5A3`, `WII_RGBA8`, `WII_CMPR`; paletted `WII_C4`, `WII_C8`, `WII_C14X2` | ✅ (paletted via `texc_decode_paletted`) | ✅ (not paletted) |
 | Raw | RGBA8 passthrough | ✅ | ✅ |
+| Raw elements | `RAW8`, `RAW16`, `RAW32`, `RAW64`, `RAW128` (1-16 bytes a texel, swizzling only) | - | - |
 
 Decode target is 8-bit RGBA (`texc_decode`) or float RGBA (`texc_decode_f32`,
 full range for BC6H / ASTC HDR). Encode source is 8-bit RGBA (`texc_encode`)
@@ -150,8 +151,8 @@ the test suite. Supported layouts:
 |---|---|
 | `TEXC_SWIZZLE_PS4` | Orbis 8x8 micro-tile Morton |
 | `TEXC_SWIZZLE_PS5` | Prospero / AMD GFX10 block tiling (`arg` = `texc_ps5_tile_mode`, 0 = standard 4 KB blocks); whole mip chains via the surface-layout API below |
-| `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto); G1T platform `0x10` |
-| `TEXC_SWIZZLE_SWITCH2` | Switch 2 / NVIDIA Orin block-linear GOBs, same `arg` and sizes as `SWITCH`; G1T platform `0x18` |
+| `TEXC_SWIZZLE_SWITCH` | Tegra X1 block-linear GOBs (`arg` = block height log2, `0xFFFFFFFF` = auto) |
+| `TEXC_SWIZZLE_SWITCH2` | Switch 2 / NVIDIA Orin block-linear GOBs, same `arg` and sizes as `SWITCH` |
 | `TEXC_SWIZZLE_PSVITA` | GXM: 32x32 pixel tiles for raw formats (`arg` = bytes per pixel, 0 = the format's own; G1T ships 8/16/24/32bpp raw Vita textures), Morton / Z-order for block formats |
 | `TEXC_SWIZZLE_X360` | Xenos macro tiling (`arg` = pitch override, byte order and stored-rows flag, see below) |
 | `TEXC_SWIZZLE_PSP` | 16-byte x 8-row tiles |
@@ -176,10 +177,9 @@ Orin:     ((x%64)/32)*256 + ((y%8)/4)*128 + ((x%32)/16)*64 + (y%4)*16 + x%16
 
 (`x` = byte within the row, `y` = row within the GOB.) So any code that
 already handles a Switch G1T handles a Switch 2 one by passing
-`TEXC_SWIZZLE_SWITCH2` instead; in G1T the platform byte is `0x18` rather
-than `0x10`. Both patterns come from ScanMountGoat's `tegra_swizzle`
-(its `isOrin` path), and `tests/switch2_kat.h` holds known answers produced
-by that library for both GPUs.
+`TEXC_SWIZZLE_SWITCH2` instead. Both patterns come from ScanMountGoat's 
+`tegra_swizzle` (its `isOrin` path), and `tests/switch2_kat.h` holds 
+known answers produced by that library for both GPUs.
 
 When you pass a non-zero `arg`, size the linear side with
 `texc_unswizzled_size(mode, format, w, h, arg)` rather than
@@ -193,6 +193,26 @@ image are dropped, as the reference does. That only happens when a
 dimension is not a multiple of 32, where the mapping is consequently not
 invertible. A test compares the port against the reference formula across
 sizes and 8/16/24/32bpp.
+
+### Raw texels of any size (`RAW8` ... `RAW128`)
+
+Uncompressed data other than RGBA8 (R8, RG8, RGBA16F, RGBA32F, ...) goes
+through the swizzle modes, the mip-chain API and PS5 tile-mode detection
+as `TEXC_FORMAT_RAW8` / `RAW16` / `RAW32` / `RAW64` / `RAW128`, named by
+bytes per texel alone. Each mode applies its own element-size rules:
+
+| Mode | What the element size changes |
+|---|---|
+| PS4 | 8x8 Morton micro-tiles for every size, but the pitch grows by 8 until a slice is a multiple of 256 bytes (1- and 2-byte texels); matched byte for byte against Sony's GpuAddress (`tools/ps4_oracle`) |
+| PS5 | AMD GFX10 standard swizzle per element size, as verified against Sony's AgcGpuAddress |
+| Wii U | addrlib's micro-tile order and macro tiling for the element size (a GX2 format of that size) |
+| X360 | element size in the tile address and byte order (8in16 for 2/8 bytes, 8in32 for 4/16); the level is aligned to 4 KB, which 1- and 2-byte texels need |
+| DX12 64KB | the tile shape (256x256 down to 64x64 texels) |
+| Switch / Switch 2 / PSP | byte based, so nothing |
+
+They carry no channel layout, so `texc_decode` / `texc_encode` reject them
+(`texc_can_decode` / `texc_can_encode` report 0); decode the texels
+yourself after unswizzling. `RAW32` tiles exactly like `RGBA8`.
 
 ### D3D12 64KB tiles (KTGL PC)
 
@@ -238,6 +258,69 @@ shorter `src` and reads the missing tail as zeros (missing bytes =
 rows. Elements the stored rows never reach come out as zeros, as on the
 console.
 
+### Switch / Switch 2 mip chains and arrays
+
+KTGL's Switch loader (Hyrule Warriors: Age of Calamity) creates the NVN
+texture and reads a tiled G1T payload straight into its storage, exactly
+`nvnTextureGetStorageSize` bytes, so the file is NVN's own block-linear
+surface. `texc_get_surface_layout` / `texc_unswizzle_mip` /
+`texc_reswizzle_mip` with `TEXC_SWIZZLE_SWITCH` or `SWITCH2` and
+`arg = 0xFFFFFFFF` (NVN's own block height) describe it:
+
+- each slice (array layer, cube face) holds its mips back to back;
+- each mip is in GOB blocks of its own height: mip 0's, halved while the
+  mip still fits in half of it;
+- with several slices, every slice is padded to a whole block of GOBs,
+  from mip 0's block height halved while half of it still covers the
+  image height in pixels.
+
+This matches ScanMountGoat's `tegra_swizzle` byte for byte
+(`tests/switch_surface_kat.h`, generated by `tools/switch_oracle`) and the
+payload of every tiled Switch sample, arrays of 4 to 600 layers included; a
+1024x1024 BC1 with 9 mips is 704,512 bytes a slice.
+
+Whether a Switch texture is tiled at all depends only on its G1T format,
+as on Wii U, PS4 and X360: KTGL tiles `0x09`-`0x0D`, `0x11`-`0x13`, `0x15`,
+`0x17`, `0x18`, `0x1C`-`0x1E`, `0x20`, `0x22`, `0x24`-`0x33`,
+`0x3B`-`0x3F`, `0x42`-`0x48`, `0x4B`, `0x4D`, `0x4F`, `0x51`, `0x53`,
+`0x60`-`0x66`, `0x6D`, `0x74`-`0x79` and `0x7E`, and uploads every other
+format linearly through the driver: the plain BC formats `0x59`-`0x5F` and
+the linear ASTC `0x7D`, whose payloads are the tight linear sizes. A tiled
+format's payload is always the full block-linear surface.
+
+### Volume textures (G1T type 2)
+
+`texc_get_volume_layout`, `texc_unswizzle_volume_mip` and
+`texc_reswizzle_volume_mip` (JS: the `depth` option of `surfaceLayout` /
+`unswizzleMip` / `reswizzleMip`; CLI: `--mips N --depth N`) handle a
+width x height x depth texture, a mip at a time with all of its slices,
+slice-major on the linear side. `texc_mip_layout.depth` gives each mip's
+depth.
+
+- `TEXC_SWIZZLE_SWITCH` / `SWITCH2`: NVN's 3D block-linear layout. A block
+  is one GOB wide, one GOB tall (whatever the 2D rule would pick) and `bd`
+  GOBs deep, the GOBs of successive slices back to back; `bd` is 16, 8, 4,
+  2 or 1 from the mip's own depth, blocks run across x, then down y, then
+  deeper in z, and each mip is padded to whole blocks in depth. Matches
+  `tegra_swizzle` byte for byte (7 volume cases in
+  `tests/switch_surface_kat.h`, mip chains and odd depths included), the
+  payload sizes of Pokopia's Switch 2 volumes (512x512x64 BC1, 256x256x16
+  RGBA16F) and Age of Calamity's 32x32x32 ASTC, and all three read smooth
+  along every axis.
+- `TEXC_SWIZZLE_PS4`: KTGL's volume setup asks GNM for `Thick_1dThick`.
+  Raw texels of 1 to 8 bytes are thick-tiled: 8x8x4-element micro tiles,
+  row by row, a 4-slice slab at a time, depth padded to 4, with the
+  element order inside a tile depending on the texel size. Block-compressed
+  formats and 16-byte texels (RGBA32F) come out `Thin_1dThin` a slice at a
+  time. Checked byte for byte against Sony's GpuAddress
+  (`tests/ps4_volume_kat.h`, `tools/ps4_oracle`), and all 779 volumes in
+  the Nioh 2 samples (colour-grading LUTs and BC mip chains) match KTGL's
+  sizes exactly and decode smooth along every axis.
+- `TEXC_SWIZZLE_NONE`: mips back to back, each mip's slices back to back.
+- Other modes return `TEXC_ERR_UNSUPPORTED`. PS5, X360 and Wii U have
+  thick tile modes too, but a sweep of the known corpus found no G1T
+  volume on those platforms, so they are deliberately not implemented.
+
 ### Wii U (GX2) mip chains
 
 KTGL's Wii U loader (Hyrule Warriors) hands GX2 the G1T bytes as the
@@ -254,11 +337,6 @@ parent mip scaled down. Single-mip arrays and cube maps work too (faces
 use addrlib's per-slice bank rotation); GX2 keeps all slices of a level
 together, which the slice-major layout struct cannot describe, so several
 mips of several slices return `TEXC_ERR_UNSUPPORTED`.
-
-KTGL's loader would force some G1T formats to `LINEAR_ALIGNED` on Wii U
-(the BC formats `0x59`-`0x5F` among them, while `0x60`-`0x66` are tiled),
-but no known Wii U title ships textures in those formats, so that layout
-is not implemented.
 
 ### PS5 (Prospero) tiling and mip-chain surfaces
 
@@ -319,15 +397,24 @@ single mip (its block-padded raster, `texc_swizzled_size` bytes) and are
 exactly `texc_unswizzle_mip` on a one-level surface, so mip 0 of a chain
 can also be converted by pointing them at `lay.mips[0].offset`.
 `texc_get_surface_layout` also works for `TEXC_SWIZZLE_NONE` (mips back to
-back, mip 0 first) and `TEXC_SWIZZLE_WIIU` (below); other modes return
+back, mip 0 first), `TEXC_SWIZZLE_PS4`, `TEXC_SWIZZLE_SWITCH` / `SWITCH2`
+and `TEXC_SWIZZLE_WIIU` (above); other modes return
 `TEXC_ERR_UNSUPPORTED`.
+
+**PS4 mip chains** are stored mip 0 first, back to back, each tiled at its
+own pitch. A chain of several mips is padded by GNM, at any size: each
+mip's width is mip 0's width rounded up to a power of two and halved per
+level, its height is its own rounded up to a power of two, then the usual
+8-element alignment and 256-byte pitch rule apply. This was fitted against
+KTGL's own layout code on 1,000 random chains and is checked on every run
+of `tools/ps4_oracle`. A chain with several slices is not supported yet
+(the slice order is unknown).
 
 The implementation is derived from AMD addrlib (MIT). It is verified
 bit-for-bit against Sony's `AgcGpuAddress` host library across tile modes,
 element sizes, odd sizes, mip counts and slices by `tools/ps5_oracle`
 (needs the PS5 SDK, never committed); the SDK-generated known-answer table
-it produces (`tests/ps5_kat.h`) is checked by the normal test suite, and
-so are real G1T textures when `samples/ps5/textures/` is present. 3D
+it produces (`tests/ps5_kat.h`) is checked by the normal test suite. 3D
 (volume) textures, render-target/depth tile modes and MSAA are not
 implemented.
 

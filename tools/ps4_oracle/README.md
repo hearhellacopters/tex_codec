@@ -28,6 +28,7 @@ cl /nologo /O2 /EHa /LD /MD tools\ps4_oracle\ps4_host.cpp build\sysv_thunk.obj ^
 set TEXC_PS4_EBOOT=C:\path\to\eboot-SOP.bin
 python tools\ps4_oracle\ps4_oracle.py verify
 python tools\ps4_oracle\ps4_oracle.py layout 128 16 1 0x0c 285
+python tools\ps4_oracle\ps4_oracle.py kat > tests\ps4_volume_kat.h
 ```
 
 `layout` takes the G1T dimensions, mip count, G1T format byte and layer count.
@@ -42,7 +43,8 @@ real mip count, because a count longer than the chain gives garbage.
   8x8 Morton micro-tiles, laid out row by row.
 - Both pitch and size rules (below).
 - When `build\Release\texc.exe` exists, `texc reswizzle -m ps4` output is
-  compared byte for byte with the oracle.
+  compared byte for byte with the oracle for every element size (the raw
+  ones as `RAW8` / `RAW16` / `RGBA8` / `RAW64` / `RAW128`).
 
 It must report 0 failed.
 
@@ -59,7 +61,16 @@ It must report 0 failed.
   changes anything for 1- and 2-byte texels.
 - `Display_LinearAligned` aligns the pitch to 64 bytes, then grows it by that
   unit until `pitch * h * bytes` is a multiple of 256.
-- Power-of-two mip chains are each level at its own size, stored back to
-  back. Non-power-of-two chains with more than one mip are padded up
-  further, and that rule is not pinned down yet: use `tile(..., mip=i)` or
-  `layout` per level.
+- Mip chains are stored back to back, mip 0 first. A chain of several mips
+  is padded at any size: each mip's width is mip 0's width rounded up to a
+  power of two and halved per level, its height its own rounded up to a
+  power of two, then the pitch and size rules above. It fits 1,000 random
+  2D and volume chains, and `verify` checks 80 random chains through
+  `texc`.
+- Volumes (G1T type 2) are set up by `0x22B8010` (`kt_volume_layout`).
+  KTGL asks for `Thick_1dThick` (tile mode 19) for every tiled format but
+  RGBA32F. GNM tiles raw texels of 1-8 bytes thick: 8x8x4 micro tiles, a
+  4-slice slab at a time, element order per texel size. BC and RGBA32F come
+  out `Thin_1dThin` a slice at a time. `tile()` needs `surface_flags=0x20`
+  (volume) for the depth to count. `verify` checks sizes and mip 0 bytes,
+  and `kat` writes `tests/ps4_volume_kat.h` for the test suite.

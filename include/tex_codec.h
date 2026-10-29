@@ -194,6 +194,19 @@ typedef enum texc_format {
     TEXC_FORMAT_WII_C8,           /* GX_TF_CI8,    8bpp,  8x4 tile, paletted*/
     TEXC_FORMAT_WII_C14X2,        /* GX_TF_CI14X2,16bpp,  4x4 tile, paletted*/
 
+    /* Raw texels named by element size alone, for moving uncompressed data
+     * of any width through the swizzle modes (texc_unswizzle /
+     * texc_reswizzle, the mip-chain API, PS5 tile-mode detection); each
+     * platform applies its own element-size rules. The channel layout is
+     * the caller's business, so texc_decode / texc_encode do not accept
+     * them (texc_can_decode / texc_can_encode report 0). RAW32 tiles
+     * exactly like RGBA8. */
+    TEXC_FORMAT_RAW8,             /* 1 byte per texel                       */
+    TEXC_FORMAT_RAW16,            /* 2 bytes per texel                      */
+    TEXC_FORMAT_RAW32,            /* 4 bytes per texel                      */
+    TEXC_FORMAT_RAW64,            /* 8 bytes per texel (e.g. RGBA16F)       */
+    TEXC_FORMAT_RAW128,           /* 16 bytes per texel (e.g. RGBA32F)      */
+
     TEXC_FORMAT_COUNT
 } texc_format;
 
@@ -257,7 +270,7 @@ TEXC_API size_t texc_decoded_size(uint32_t width, uint32_t height);
 
 /* 1 if decode / encode is implemented for the format, else 0. Paletted
  * formats report can_decode = 1 (via texc_decode_paletted) and
- * can_encode = 0. */
+ * can_encode = 0; the RAW8..RAW128 element formats report 0 for both. */
 TEXC_API int texc_can_decode(texc_format format);
 TEXC_API int texc_can_encode(texc_format format);
 
@@ -509,8 +522,30 @@ TEXC_API int texc_decode_swizzled(texc_swizzle_mode mode, texc_format format,
  * texc_unswizzle_mip / texc_reswizzle_mip address a single mip inside it.
  *
  * Currently implemented for TEXC_SWIZZLE_PS5 (STANDARD_256B / 4KB / 64KB),
+ * TEXC_SWIZZLE_PS4, TEXC_SWIZZLE_SWITCH / TEXC_SWIZZLE_SWITCH2,
  * TEXC_SWIZZLE_WIIU and TEXC_SWIZZLE_NONE (mips stored back to back, mip 0
  * first). Other modes return TEXC_ERR_UNSUPPORTED.
+ *
+ * PS4 layout (GNM Thin_1dThin, which KTGL picks for its tiled formats):
+ * mips back to back, mip 0 first, each tiled at its own padded pitch. A
+ * lone mip keeps its size; in a chain of several mips GNM pads them, each
+ * mip's width being mip 0's width rounded up to a power of two and halved
+ * per level, and its height its own rounded up to a power of two (then
+ * the usual 8-element alignment and 256-byte pitch rule). Checked against
+ * Sony's GpuAddress inside a KTGL eboot (tools/ps4_oracle). Several slices
+ * work for a single mip; a mip chain of several slices returns
+ * TEXC_ERR_UNSUPPORTED (slice order not pinned down yet).
+ *
+ * Switch / Switch 2 layout (NVN block-linear storage, which KTGL's loader
+ * reads a tiled G1T payload straight into; `arg` = block height log2 of
+ * mip 0, or 0xFFFFFFFF for auto as NVN picks it): each slice holds its
+ * mips back to back, every mip in GOB blocks of its own height (mip 0's,
+ * halved while the mip fits in half of it). With several slices each
+ * slice is padded to a whole block of GOBs, from mip 0's block height
+ * halved while half of it still covers the image height in pixels.
+ * Matches ScanMountGoat's tegra_swizzle swizzle_surface byte for byte
+ * (tests/switch_surface_kat.h) and the payload of every tiled Switch G1T
+ * sample, e.g. 1024x1024 BC1 with 9 mips = 704,512 bytes a slice.
  *
  * Wii U layout (GX2 via addrlib, as KTGL's loader sets it up: tile mode
  * DEFAULT = 2D_TILED_THIN1, `arg` = the GX2 swizzle value): mip 0 at
@@ -541,6 +576,8 @@ typedef struct texc_mip_layout {
     uint64_t size;                         /* bytes of blocks holding it    */
     uint32_t in_tail;                      /* 1 = packed in the mip tail    */
     uint32_t tail_x, tail_y;               /* element position in the tail */
+    uint32_t depth;                        /* slices of a volume mip; 1 for
+                                            * 2D (was padding before 1.8)   */
 } texc_mip_layout;
 
 typedef struct texc_surface_layout {
@@ -608,6 +645,57 @@ TEXC_API int texc_reswizzle_mip(texc_swizzle_mode mode, texc_format format,
                                 uint32_t arg, uint32_t mip, uint32_t slice,
                                 const uint8_t *src, size_t src_size,
                                 uint8_t *surface, size_t surface_size);
+
+/* ------------------------------------------------ volume (3D) textures --- */
+/* A volume texture (G1T type 2) of width x height x depth texels and
+ * `mip_count` mips, each mip half the size of the last in every axis, as one
+ * tiled surface. In the layout, mips[m].depth is that mip's depth,
+ * mips[m].size covers all of its slices, and slice_count is 1.
+ *
+ * Implemented for TEXC_SWIZZLE_NONE (mips back to back, each mip's slices
+ * back to back), TEXC_SWIZZLE_PS4 and TEXC_SWIZZLE_SWITCH / SWITCH2.
+ *
+ * PS4 (KTGL asks GNM for Thick_1dThick): raw texels of 1-8 bytes are
+ * thick-tiled - 8x8x4-element micro tiles, row by row, a 4-slice slab at a
+ * time, depth padded to 4; block-compressed formats and 16-byte texels
+ * come out Thin_1dThin a slice at a time. A mip chain is padded as for 2D
+ * (above), the depth also rounded up to a power of two. Checked byte for
+ * byte against Sony's GpuAddress and on Nioh 2's 779 volumes.
+ *
+ * Switch / Switch 2: NVN's 3D block-linear layout, as tegra_swizzle
+ * computes it and as Pokopia (Switch 2) ships it.
+ * There a block is one GOB wide and one GOB tall (whatever `arg` says) and
+ * `bd` GOBs deep, the GOBs of successive slices back to back; bd is 16, 8,
+ * 4, 2 or 1 from the mip's own depth (16 once depth + depth / 2 >= 16, and
+ * so on), blocks run across x, then down y, then deeper in z, and each mip
+ * is padded to whole blocks in depth. Other modes return
+ * TEXC_ERR_UNSUPPORTED: no G1T volume is known on the other platforms. */
+TEXC_API int texc_get_volume_layout(texc_swizzle_mode mode,
+                                    texc_format format,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t depth, uint32_t mip_count,
+                                    uint32_t arg, texc_surface_layout *out);
+
+/* Extract every slice of mip `mip` of a volume surface (layout.total_size
+ * bytes) to linear, slice-major: dst receives width * height * depth *
+ * element_bytes of that mip, slice 0 first. */
+TEXC_API int texc_unswizzle_volume_mip(texc_swizzle_mode mode,
+                                       texc_format format,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t depth, uint32_t mip_count,
+                                       uint32_t arg, uint32_t mip,
+                                       const uint8_t *surface,
+                                       size_t surface_size,
+                                       uint8_t *dst, size_t dst_size);
+
+/* Inverse: write a mip's linear slices into a volume surface. */
+TEXC_API int texc_reswizzle_volume_mip(texc_swizzle_mode mode,
+                                       texc_format format,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t depth, uint32_t mip_count,
+                                       uint32_t arg, uint32_t mip,
+                                       const uint8_t *src, size_t src_size,
+                                       uint8_t *surface, size_t surface_size);
 
 /* ------------------------------------------------------- image utilities */
 /* Colour profile conversion and flip/crop, modelled on tex-decoder's
